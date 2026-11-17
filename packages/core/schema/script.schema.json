@@ -1,0 +1,592 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "bookId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "chapterId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "episodeNumber": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "coldOpen": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "announcer"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "delivery": {
+                "type": "string",
+                "enum": [
+                  "neutral",
+                  "whisper",
+                  "urgent",
+                  "fearful",
+                  "sinister",
+                  "warm"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "narration"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "delivery": {
+                "type": "string",
+                "enum": [
+                  "neutral",
+                  "whisper",
+                  "urgent",
+                  "fearful",
+                  "sinister",
+                  "warm"
+                ]
+              },
+              "containsVerbatimQuote": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "dialogue"
+              },
+              "speaker": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "delivery": {
+                "type": "string",
+                "enum": [
+                  "neutral",
+                  "whisper",
+                  "urgent",
+                  "fearful",
+                  "sinister",
+                  "warm"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "speaker",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "sfx"
+              },
+              "sfxId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "durationMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 60000
+              }
+            },
+            "required": [
+              "kind",
+              "sfxId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "music"
+              },
+              "cue": {
+                "type": "string",
+                "enum": [
+                  "theme",
+                  "sting",
+                  "transition"
+                ]
+              },
+              "durationMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 60000
+              }
+            },
+            "required": [
+              "kind",
+              "cue"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "pause"
+              },
+              "ms": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000
+              }
+            },
+            "required": [
+              "kind",
+              "ms"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "scenes": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ambience": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "sfx",
+                  "music"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "gainDb": {
+                "type": "number",
+                "minimum": -40,
+                "maximum": 0
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "segments": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "announcer"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "delivery": {
+                      "type": "string",
+                      "enum": [
+                        "neutral",
+                        "whisper",
+                        "urgent",
+                        "fearful",
+                        "sinister",
+                        "warm"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "narration"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "delivery": {
+                      "type": "string",
+                      "enum": [
+                        "neutral",
+                        "whisper",
+                        "urgent",
+                        "fearful",
+                        "sinister",
+                        "warm"
+                      ]
+                    },
+                    "containsVerbatimQuote": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "dialogue"
+                    },
+                    "speaker": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "delivery": {
+                      "type": "string",
+                      "enum": [
+                        "neutral",
+                        "whisper",
+                        "urgent",
+                        "fearful",
+                        "sinister",
+                        "warm"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "speaker",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "sfx"
+                    },
+                    "sfxId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "durationMs": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 60000
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "sfxId"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "music"
+                    },
+                    "cue": {
+                      "type": "string",
+                      "enum": [
+                        "theme",
+                        "sting",
+                        "transition"
+                      ]
+                    },
+                    "durationMs": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 60000
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "cue"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "pause"
+                    },
+                    "ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10000
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "ms"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "segments"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "close": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "announcer"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "delivery": {
+                "type": "string",
+                "enum": [
+                  "neutral",
+                  "whisper",
+                  "urgent",
+                  "fearful",
+                  "sinister",
+                  "warm"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "narration"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "delivery": {
+                "type": "string",
+                "enum": [
+                  "neutral",
+                  "whisper",
+                  "urgent",
+                  "fearful",
+                  "sinister",
+                  "warm"
+                ]
+              },
+              "containsVerbatimQuote": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "dialogue"
+              },
+              "speaker": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "delivery": {
+                "type": "string",
+                "enum": [
+                  "neutral",
+                  "whisper",
+                  "urgent",
+                  "fearful",
+                  "sinister",
+                  "warm"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "speaker",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "sfx"
+              },
+              "sfxId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "durationMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 60000
+              }
+            },
+            "required": [
+              "kind",
+              "sfxId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "music"
+              },
+              "cue": {
+                "type": "string",
+                "enum": [
+                  "theme",
+                  "sting",
+                  "transition"
+                ]
+              },
+              "durationMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 60000
+              }
+            },
+            "required": [
+              "kind",
+              "cue"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "pause"
+              },
+              "ms": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000
+              }
+            },
+            "required": [
+              "kind",
+              "ms"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "bookId",
+    "chapterId",
+    "episodeNumber",
+    "coldOpen",
+    "scenes",
+    "close"
+  ],
+  "additionalProperties": false
+}
