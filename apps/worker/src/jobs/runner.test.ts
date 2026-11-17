@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
-import { openDb } from "@midnight-radio/db";
+import { BudgetLedger, openDb } from "@midnight-radio/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LeaseLostError, OverBudgetError, PermanentJobError } from "./errors.js";
 import { JobQueue } from "./queue.js";
@@ -110,6 +110,41 @@ describe("runOnce", () => {
       },
     });
     expect(queue.get(id)).toMatchObject({ state: "queued", attempts: 0 });
+  });
+});
+
+describe("budget integration", () => {
+  it("parks a job as over_budget without calling the provider, and fences reservations by lease", async () => {
+    db.prepare("INSERT INTO books (id, title, source_hash, status, created_at) VALUES ('b1', 'T', 'h', 'ready', 0)").run();
+    const queue = q();
+    const ledger = new BudgetLedger(db, { dailyTtsChars: 100, dailyLlmTokens: 0, bookTtsCharCeiling: 60_000 });
+    const { id } = queue.enqueue("render", "c1");
+    let providerCalls = 0;
+    const handler: JobHandler = async ({ assertLease }) => {
+      for (const chars of [60, 60]) {
+        await ledger.withReservation(
+          { bookId: "b1", chapterId: null, ttsChars: chars },
+          async () => {
+            providerCalls++;
+            return { value: undefined, usage: { ttsChars: chars } };
+          },
+          { fence: assertLease },
+        );
+      }
+    };
+    await runOnce({ queue, handlers: { render: handler } });
+    expect(providerCalls).toBe(1);
+    expect(queue.get(id)).toMatchObject({ state: "over_budget" });
+    expect(queue.get(id)!.error).toMatch(/allowance is used up/);
+
+    const stale = { jobId: "nope", token: "x" };
+    expect(() =>
+      ledger.reserve({ bookId: "b1", ttsChars: 1 }, {
+        fence: () => {
+          if (!queue.holds(stale)) throw new LeaseLostError(stale.jobId);
+        },
+      }),
+    ).toThrow(LeaseLostError);
   });
 });
 

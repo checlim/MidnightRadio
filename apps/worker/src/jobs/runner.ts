@@ -10,6 +10,8 @@ export interface JobContext {
   signal: AbortSignal;
   /** Fenced DB write; throws LeaseLostError if this worker no longer owns the job. */
   publish<T>(fn: (db: DatabaseSync) => T): T;
+  /** Throws LeaseLostError unless this worker still owns the job. Pass as the BudgetLedger `fence`. */
+  assertLease(): void;
 }
 
 export type JobHandler = (ctx: JobContext) => Promise<void>;
@@ -41,7 +43,15 @@ export async function runOnce(opts: RunnerOptions): Promise<boolean> {
   }, opts.heartbeatMs ?? Math.max(1, Math.floor(queue.leaseMs / 3)));
 
   try {
-    await handler({ job, lease, signal: ctrl.signal, publish: (fn) => queue.publish(lease, fn) });
+    await handler({
+      job,
+      lease,
+      signal: ctrl.signal,
+      publish: (fn) => queue.publish(lease, fn),
+      assertLease: () => {
+        if (!queue.holds(lease)) throw new LeaseLostError(job.id);
+      },
+    });
     queue.complete(lease); // Fenced: throws LeaseLostError if ownership was lost meanwhile.
   } catch (err) {
     settleFailure(queue, lease, job, err, opts.signal?.aborted ?? false, opts.onError);
