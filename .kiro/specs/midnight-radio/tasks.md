@@ -8,7 +8,7 @@
 
 - [ ] 2. SQLite persistence, resumable job queue, and spend guardrails
   - [x] 2.1 Migrations for `books`, `chapters` (with `canonical_text`), `cast_members`, `scripts`, `segments`, `episodes`, `jobs` (with `lease_until`), `usage` (with `day_utc`), and durable `budget_reservations`; include source quote inventory and parser/normaliser versions
-  - [ ] 2.2 Resumable job runner (atomic claim, lease heartbeat, ownership fencing before publication, crash recovery on restart)
+  - [x] 2.2 Resumable job runner (atomic claim, lease heartbeat, ownership fencing before publication, crash recovery on restart)
   - [ ] 2.3 Operator-controlled per-Book TTS budget + global daily TTS/LLM caps (`GLOBAL_DAILY_TTS_CHAR_LIMIT`, `GLOBAL_DAILY_LLM_TOKEN_LIMIT`); transactional reservations/settlement for every paid call, retries and uncertain outcomes; rate-limit all generation routes and optionally gate with `UPLOAD_PASSKEY`; missing/zero caps disable paid calls
   - _Requirements: 8.1, 8.2, 8.4_
 

@@ -26,7 +26,11 @@ importers:
 
   apps/web: {}
 
-  apps/worker: {}
+  apps/worker:
+    dependencies:
+      '@midnight-radio/db':
+        specifier: workspace:*
+        version: link:../../packages/db
 
   mcp/sfx-library: {}
 
