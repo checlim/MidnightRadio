@@ -38,7 +38,13 @@ export type GuardResult =
   | { ok: true }
   | { ok: false; status: 401 | 429; message: string; retryAfterSec?: number };
 
-/** Fixed-window counter per key, with a bounded number of tracked keys. */
+/**
+ * Fixed-window counter per key, with a bounded number of tracked keys.
+ *
+ * Live entries are never evicted, so a client cannot clear its own lockout by flooding the table
+ * with other keys. When the table is full of live entries, untracked keys are refused until the
+ * oldest window expires (fail closed under a key-rotation flood).
+ */
 export class WindowCounter {
   private readonly hits = new Map<string, { start: number; count: number }>();
 
@@ -47,20 +53,31 @@ export class WindowCounter {
     private readonly maxKeys = 10_000,
   ) {}
 
-  /** Seconds until the window resets if `key` is at its limit, otherwise 0. */
+  /** Seconds until `key` may proceed: its own window if at the limit, or the table's if full. 0 if allowed. */
   blockedFor(key: string, now: number): number {
     const h = this.current(key, now);
-    return h && h.count >= this.limit.max ? Math.ceil((h.start + this.limit.windowMs - now) / 1000) : 0;
+    if (h) return h.count >= this.limit.max ? this.secondsLeft(h.start, now) : 0;
+    if (this.hits.size >= this.maxKeys) this.purgeExpired(now);
+    if (this.hits.size < this.maxKeys) return 0;
+    const oldest = this.hits.values().next().value!; // Map keeps insertion order
+    return this.secondsLeft(oldest.start, now);
   }
 
-  hit(key: string, now: number): void {
+  /** Record a hit. Returns false (and records nothing) if the key is untracked and the table is full. */
+  hit(key: string, now: number): boolean {
     const h = this.current(key, now);
     if (h) {
       h.count++;
-      return;
+      return true;
     }
-    if (this.hits.size >= this.maxKeys) this.evict(now);
+    if (this.hits.size >= this.maxKeys) this.purgeExpired(now);
+    if (this.hits.size >= this.maxKeys) return false;
     this.hits.set(key, { start: now, count: 1 });
+    return true;
+  }
+
+  private secondsLeft(start: number, now: number): number {
+    return Math.max(1, Math.ceil((start + this.limit.windowMs - now) / 1000));
   }
 
   private current(key: string, now: number) {
@@ -72,11 +89,27 @@ export class WindowCounter {
     return h;
   }
 
-  private evict(now: number): void {
+  private purgeExpired(now: number): void {
     for (const [k, h] of this.hits) if (now - h.start >= this.limit.windowMs) this.hits.delete(k);
-    // Still full: drop the oldest entry (Map preserves insertion order).
-    if (this.hits.size >= this.maxKeys) this.hits.delete(this.hits.keys().next().value!);
   }
+}
+
+/**
+ * Normalise a client IP into a rate-limit key. IPv6 addresses are grouped by /64, because a single
+ * client usually controls a whole /64 and could otherwise rotate through unlimited fresh keys.
+ * The IP itself must come from the hosting platform's trusted header, never a raw X-Forwarded-For.
+ */
+export function clientKeyFromIp(ip: string): string {
+  const addr = ip.trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(addr);
+  if (mapped) return `v4:${mapped[1]}`;
+  if (!addr.includes(":")) return `v4:${addr}`;
+  const [head = "", tail = ""] = addr.split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const groups = addr.includes("::") ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t] : h;
+  const prefix = groups.slice(0, 4).map((g) => (g || "0").replace(/^0+(?=.)/, ""));
+  return `v6:${prefix.join(":")}::/64`;
 }
 
 /** Constant-time comparison that does not leak length. */
@@ -107,10 +140,12 @@ export class GenerationGuard {
     if (locked > 0) return tooMany(locked, "Too many incorrect passkey attempts. Try again later.");
     const limited = this.requests.blockedFor(clientKey, t);
     if (limited > 0) return tooMany(limited, "Too many generation requests. Try again later.");
-    this.requests.hit(clientKey, t); // counted before the passkey check, so failures count too
+    // Counted before the passkey check, so failed attempts count too.
+    if (!this.requests.hit(clientKey, t)) return tooMany(1, "Too many generation requests. Try again later.");
 
     if (this.config.passkey && !passkeyMatches(providedPasskey, this.config.passkey)) {
-      this.failures.hit(clientKey, t);
+      // If the failure table is full, the attempt cannot be tracked; refuse rather than allow untracked guessing.
+      if (!this.failures.hit(clientKey, t)) return tooMany(1, "Too many incorrect passkey attempts. Try again later.");
       return { ok: false, status: 401, message: "A valid judge passkey is required to generate new episodes." };
     }
     return { ok: true };

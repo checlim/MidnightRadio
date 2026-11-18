@@ -1,12 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BudgetLedger, loadBudgetConfig, type BudgetConfig } from "./budget.js";
+import { BudgetLedger, dayUtc, loadBudgetConfig, type BudgetConfig } from "./budget.js";
 import { BudgetExceededError, OverBudgetError } from "./errors.js";
 import { openDb } from "./open.js";
+import { runConcurrently } from "./test-support/processes.js";
 
 const DAY1 = Date.UTC(2026, 10, 15, 12);
 const DAY2 = Date.UTC(2026, 10, 16, 0, 0, 1);
@@ -123,24 +125,24 @@ describe("reserve", () => {
     expect(l.daySpend().ttsChars).toBe(0);
   });
 
-  it("two connections cannot overshoot the cap", () => {
+  it("concurrent processes cannot overshoot the cap", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mr-budget-"));
     try {
       const path = join(dir, "b.db");
-      const a = openDb(path);
-      addBook(a);
-      const b = openDb(path);
-      const la = ledger(CFG, a);
-      const lb = ledger(CFG, b);
-      const results = [la, lb, la, lb].map((l) => limitOf(() => l.reserve({ bookId: "b1", ttsChars: 2_500 })));
-      expect(results).toEqual(["ok", "ok", "book_tts", "book_tts"]);
-      expect(la.bookSpend("b1").ttsChars).toBe(5_000);
-      a.close();
-      b.close();
+      const setup = openDb(path);
+      addBook(setup, "b1", 1_000_000);
+      setup.close();
+      // 6 processes x 5 attempts x 500 chars = 15,000 requested against a 10,000 cap.
+      const child = join(dirname(fileURLToPath(import.meta.url)), "test-support/reserve-child.ts");
+      const out = await runConcurrently(child, Array.from({ length: 6 }, () => [path, "10000", "500", "5"]));
+      const after = openDb(path);
+      expect(out.reduce((sum, n) => sum + Number(n), 0)).toBe(20);
+      expect(ledger(CFG, after).daySpend(dayUtc(Date.now())).ttsChars).toBe(10_000);
+      after.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });
 
 describe("settlement", () => {
@@ -215,23 +217,132 @@ describe("settlement", () => {
   });
 });
 
-describe("property: caps are never exceeded", () => {
+describe("settlement fails closed", () => {
+  it("records unreported usage as the reserved amount, never zero", () => {
+    const l = ledger();
+    const a = l.reserve({ bookId: "b1", ttsChars: 900 });
+    const b = l.reserve({ bookId: "b1", llmInputTokens: 1_000, llmMaxOutputTokens: 500 });
+    l.settle(a, {});
+    l.settle(b, { llmOutputTokens: 200 }); // input count missing
+    expect(l.daySpend()).toEqual({ ttsChars: 900, llmTokens: 1_500 });
+    expect(db.prepare("SELECT usage_estimated e, overrun o FROM budget_reservations ORDER BY rowid").all()).toEqual([
+      { e: 1, o: 0 },
+      { e: 1, o: 0 },
+    ]);
+    expect(db.prepare("SELECT llm_in, llm_out, tts_chars FROM usage ORDER BY rowid").all()).toEqual([
+      { llm_in: 0, llm_out: 0, tts_chars: 900 },
+      { llm_in: 1_300, llm_out: 200, tts_chars: 0 },
+    ]);
+  });
+
+  it("the review's probe: five calls with empty usage now trip a 1,000-char cap", async () => {
+    const l = ledger({ ...CFG, dailyTtsChars: 1_000 });
+    const results: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      try {
+        await l.withReservation({ bookId: "b1", ttsChars: 900 }, async () => ({ value: undefined, usage: {} }));
+        results.push("ok");
+      } catch (e) {
+        results.push((e as BudgetExceededError).limit);
+      }
+    }
+    expect(results).toEqual(["ok", "daily_tts", "daily_tts", "daily_tts", "daily_tts"]);
+    expect(l.daySpend().ttsChars).toBe(900);
+  });
+
+  it("records usage above the reservation, flags the overrun and blocks further calls", () => {
+    const l = ledger({ ...CFG, dailyLlmTokens: 1_000 });
+    const id = l.reserve({ bookId: "b1", llmInputTokens: 100, llmMaxOutputTokens: 100 });
+    l.settle(id, { llmInputTokens: 5_000, llmOutputTokens: 100 });
+    expect(l.daySpend().llmTokens).toBe(5_100);
+    expect(db.prepare("SELECT overrun FROM budget_reservations").get()).toEqual({ overrun: 1 });
+    expect(limitOf(() => l.reserve({ bookId: "b1", llmInputTokens: 1 }))).toBe("daily_llm");
+  });
+
+  it("treats malformed provider usage as unreported", async () => {
+    const l = ledger();
+    await l.withReservation({ bookId: "b1", ttsChars: 400 }, async () => ({
+      value: undefined,
+      usage: { ttsChars: -5, providerRequestId: "x".repeat(500) },
+    }));
+    expect(l.daySpend().ttsChars).toBe(400);
+    expect(db.prepare("SELECT provider_request_id p, usage_estimated e FROM budget_reservations").get()).toEqual({ p: null, e: 1 });
+  });
+
+  it("returns a paid result even when recording usage fails, and keeps the reservation counted", async () => {
+    const l = ledger();
+    l.settle = () => {
+      throw new Error("database is locked");
+    };
+    const errors: unknown[] = [];
+    const value = await l.withReservation({ bookId: "b1", ttsChars: 700 }, async () => ({ value: "wav", usage: { ttsChars: 700 } }), {
+      onSettleError: (e) => errors.push(e),
+    });
+    expect(value).toBe("wav");
+    expect(errors).toHaveLength(1);
+    expect(db.prepare("SELECT state FROM budget_reservations").get()).toEqual({ state: "uncertain" });
+    expect(l.daySpend().ttsChars).toBe(700);
+  });
+
+  it("records uncertain outcomes in usage, then replaces them on settlement", () => {
+    const l = ledger();
+    const id = l.reserve({ bookId: "b1", chapterId: null, ttsChars: 600 });
+    l.markUncertain(id, 30);
+    expect(db.prepare("SELECT tts_chars, wall_ms FROM usage").all()).toEqual([{ tts_chars: 600, wall_ms: 30 }]);
+    l.settle(id, { ttsChars: 550, wallMs: 10 });
+    expect(db.prepare("SELECT tts_chars, wall_ms FROM usage").all()).toEqual([{ tts_chars: 550, wall_ms: 30 }]);
+  });
+});
+
+describe("property: caps are exceeded only by recorded overruns", () => {
+  type SettleMode = "within" | "omitAll" | "omitSome" | "over";
   type Op =
     | { t: "reserve"; book: number; tts: number; llmIn: number; llmOut: number }
-    | { t: "settle"; i: number; frac: number }
+    | { t: "settle"; i: number; frac: number; mode: SettleMode }
     | { t: "release"; i: number }
     | { t: "uncertain"; i: number }
     | { t: "nextDay" };
 
   const op: fc.Arbitrary<Op> = fc.oneof(
     { weight: 4, arbitrary: fc.record({ t: fc.constant("reserve" as const), book: fc.integer({ min: 0, max: 2 }), tts: fc.integer({ min: 0, max: 4_000 }), llmIn: fc.integer({ min: 0, max: 2_000 }), llmOut: fc.integer({ min: 0, max: 2_000 }) }) },
-    { weight: 2, arbitrary: fc.record({ t: fc.constant("settle" as const), i: fc.nat(), frac: fc.double({ min: 0, max: 1, noNaN: true }) }) },
+    {
+      weight: 3,
+      arbitrary: fc.record({
+        t: fc.constant("settle" as const),
+        i: fc.nat(),
+        frac: fc.double({ min: 0, max: 3, noNaN: true }),
+        mode: fc.constantFrom<SettleMode>("within", "omitAll", "omitSome", "over"),
+      }),
+    },
     { weight: 1, arbitrary: fc.record({ t: fc.constant("release" as const), i: fc.nat() }) },
     { weight: 1, arbitrary: fc.record({ t: fc.constant("uncertain" as const), i: fc.nat() }) },
     { weight: 1, arbitrary: fc.constant({ t: "nextDay" as const }) },
   );
 
-  it("daily and per-book spend stay within limits when actual usage never exceeds the reservation", () => {
+  const settleArgs = (r: { tts: number; llm: number }, frac: number, mode: SettleMode) => {
+    const f = mode === "within" ? Math.min(frac, 1) : frac;
+    const tts = Math.floor(r.tts * f);
+    const llm = Math.floor(r.llm * f);
+    switch (mode) {
+      case "omitAll":
+        return {};
+      case "omitSome":
+        return { llmOutputTokens: llm };
+      default:
+        return { ttsChars: tts, llmInputTokens: Math.min(llm, 1), llmOutputTokens: llm - Math.min(llm, 1) };
+    }
+  };
+
+  // Spend above the reserved amount, from settled reservations only.
+  const excess = (d: DatabaseSync, where: string, arg: string) =>
+    d
+      .prepare(
+        `SELECT COALESCE(SUM(MAX(0, actual_tts_chars - tts_chars)), 0) AS tts, COALESCE(SUM(MAX(0, actual_llm_tokens - llm_tokens)), 0) AS llm
+         FROM budget_reservations WHERE state = 'settled' AND ${where}`,
+      )
+      .get(arg) as { tts: number; llm: number };
+
+  it("daily and per-book spend never exceed a cap by more than the recorded overrun", () => {
     fc.assert(
       fc.property(fc.array(op, { maxLength: 80 }), (ops) => {
         const d = openDb(":memory:");
@@ -254,10 +365,8 @@ describe("property: caps are never exceeded", () => {
                 days.add(new Date(clock).toISOString().slice(0, 10));
               } else if (ids.length > 0) {
                 const r = ids[o.i % ids.length]!;
-                if (o.t === "settle") {
-                  const llm = Math.floor(r.llm * o.frac);
-                  l.settle(r.id, { ttsChars: Math.floor(r.tts * o.frac), llmInputTokens: Math.min(llm, 1), llmOutputTokens: llm - Math.min(llm, 1) });
-                } else if (o.t === "release") l.release(r.id);
+                if (o.t === "settle") l.settle(r.id, settleArgs(r, o.frac, o.mode));
+                else if (o.t === "release") l.release(r.id);
                 else l.markUncertain(r.id);
               }
             } catch (e) {
@@ -266,9 +375,17 @@ describe("property: caps are never exceeded", () => {
           }
           for (const day of days) {
             const s = l.daySpend(day);
-            if (s.ttsChars > CFG.dailyTtsChars || s.llmTokens > CFG.dailyLlmTokens) return false;
+            const x = excess(d, "day_utc = ?", day);
+            if (s.ttsChars > CFG.dailyTtsChars + x.tts || s.llmTokens > CFG.dailyLlmTokens + x.llm) return false;
           }
-          return books.every((b, i) => l.bookSpend(b).ttsChars <= Math.min(budgets[i]!, CFG.bookTtsCharCeiling));
+          // Unreported usage must never count for less than was reserved.
+          const undercounted = d
+            .prepare("SELECT COUNT(*) n FROM budget_reservations WHERE usage_estimated = 1 AND (actual_tts_chars < tts_chars OR actual_llm_tokens < llm_tokens)")
+            .get() as { n: number };
+          if (undercounted.n > 0) return false;
+          return books.every(
+            (b, i) => l.bookSpend(b).ttsChars <= Math.min(budgets[i]!, CFG.bookTtsCharCeiling) + excess(d, "book_id = ?", b).tts,
+          );
         } finally {
           d.close();
         }

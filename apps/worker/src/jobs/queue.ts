@@ -85,11 +85,17 @@ export class JobQueue {
     if (this.leaseMs <= 0 || this.maxAttempts < 1) throw new Error("invalid JobQueue options");
   }
 
-  /** Enqueue a job, or return the existing queued/running job for the same (kind, refId). */
+  /**
+   * Enqueue a job, or return the existing queued/running/over_budget job for the same (kind, refId).
+   * A parked over-budget job is returned as-is (not duplicated); call `resume` once budget allows.
+   */
   enqueue(kind: string, refId: string): Job {
     return this.tx(() => {
       const existing = this.db
-        .prepare("SELECT * FROM jobs WHERE kind = ? AND ref_id = ? AND state IN ('queued', 'running')")
+        .prepare(
+          `SELECT * FROM jobs WHERE kind = ? AND ref_id = ? AND state IN ('queued', 'running', 'over_budget')
+           ORDER BY CASE state WHEN 'over_budget' THEN 1 ELSE 0 END LIMIT 1`,
+        )
         .get(kind, refId) as JobRow | undefined;
       if (existing) return toJob(existing);
       const t = this.now();
@@ -164,7 +170,7 @@ export class JobQueue {
   publish<T>(lease: Lease, fn: (db: DatabaseSync) => T): T {
     return this.tx(() => {
       this.assertHolds(lease);
-      return fn(this.db);
+      return assertSync(fn(this.db));
     });
   }
 
@@ -200,14 +206,24 @@ export class JobQueue {
     });
   }
 
-  /** Requeue a parked (`over_budget` or `failed`) job, resetting attempts. */
+  /**
+   * Requeue a parked (`over_budget` or `failed`) job, resetting attempts. Returns false if the job
+   * is not parked, or if another job for the same (kind, refId) is already queued or running.
+   */
   resume(jobId: string): boolean {
-    const res = this.db
-      .prepare(
-        "UPDATE jobs SET state = 'queued', attempts = 0, error = NULL, updated_at = ? WHERE id = ? AND state IN ('over_budget', 'failed')",
-      )
-      .run(this.now(), jobId);
-    return Number(res.changes) === 1;
+    return this.tx(() => {
+      const res = this.db
+        .prepare(
+          `UPDATE jobs SET state = 'queued', attempts = 0, error = NULL, updated_at = ?
+           WHERE id = ? AND state IN ('over_budget', 'failed')
+             AND NOT EXISTS (
+               SELECT 1 FROM jobs active
+               WHERE active.kind = jobs.kind AND active.ref_id = jobs.ref_id AND active.state IN ('queued', 'running')
+             )`,
+        )
+        .run(this.now(), jobId);
+      return Number(res.changes) === 1;
+    });
   }
 
   get(jobId: string): Job | undefined {
@@ -218,7 +234,7 @@ export class JobQueue {
   private finish(lease: Lease, state: JobState, error: string | null, fn?: (db: DatabaseSync) => void): void {
     this.tx(() => {
       this.assertHolds(lease);
-      fn?.(this.db);
+      if (fn) assertSync(fn(this.db));
       this.setTerminal(lease, state, error);
     });
   }
@@ -249,6 +265,17 @@ export class JobQueue {
       throw err;
     }
   }
+}
+
+/**
+ * Fenced callbacks must be synchronous: an async callback would let the transaction commit before
+ * its awaited writes run, leaving those writes unfenced. Throwing here rolls the transaction back.
+ */
+function assertSync<T>(value: T): T {
+  if (typeof (value as { then?: unknown } | null)?.then === "function") {
+    throw new TypeError("fenced callbacks must be synchronous; do async work before publish()");
+  }
+  return value;
 }
 
 /** Store only the message, never stacks or request details that might contain secrets. */

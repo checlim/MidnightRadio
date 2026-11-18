@@ -1,12 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { openDb } from "@midnight-radio/db";
 import fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LeaseLostError } from "./errors.js";
 import { JobQueue, type Lease } from "./queue.js";
+import { runConcurrently } from "./test-support/processes.js";
 
 const LEASE = 1_000;
 let db: DatabaseSync;
@@ -59,23 +61,23 @@ describe("claim", () => {
     expect(q.claim()).toBeNull();
   });
 
-  it("is atomic across two connections to the same database file", () => {
+  it("never hands one job to two worker processes racing on the same file", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mr-q-"));
     try {
       const path = join(dir, "q.db");
-      const a = openDb(path);
-      const b = openDb(path);
-      const qa = queue(a);
-      const qb = queue(b);
-      qa.enqueue("render", "c1");
-      const claims = [qa.claim(), qb.claim(), qa.claim(), qb.claim()].filter(Boolean);
-      expect(claims).toHaveLength(1);
-      a.close();
-      b.close();
+      const setup = openDb(path);
+      const q = new JobQueue(setup);
+      const ids = Array.from({ length: 20 }, (_, i) => q.enqueue("render", `c${i}`).id);
+      setup.close();
+      const child = join(dirname(fileURLToPath(import.meta.url)), "test-support/claim-child.ts");
+      const out = await runConcurrently(child, [[path], [path], [path], [path]]);
+      const claimed = out.flatMap((s) => (s ? s.split(",") : []));
+      expect(claimed).toHaveLength(20); // no job claimed twice
+      expect(new Set(claimed)).toEqual(new Set(ids)); // and none skipped
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });
 
 describe("leases and fencing", () => {
@@ -190,6 +192,41 @@ describe("fail, pause, release, resume", () => {
     expect(q.get(id)).toMatchObject({ state: "over_budget", error: "daily TTS cap reached" });
     expect(q.resume(id)).toBe(true);
     expect(q.claim()!.job).toMatchObject({ id, attempts: 1 });
+  });
+
+  it("a repeat request for an over-budget job returns the parked job instead of duplicating it", () => {
+    const q = queue();
+    const { id } = q.enqueue("render", "c1");
+    q.pauseOverBudget(q.claim()!.lease, "cap");
+    expect(q.enqueue("render", "c1")).toMatchObject({ id, state: "over_budget" });
+    expect(db.prepare("SELECT COUNT(*) n FROM jobs").get()).toEqual({ n: 1 });
+  });
+
+  it("resume returns false instead of throwing when another job for the same target is active", () => {
+    const q = queue();
+    const old = q.enqueue("render", "c1");
+    q.fail(q.claim()!.lease, new Error("x"), { retry: false });
+    const fresh = q.enqueue("render", "c1");
+    expect(fresh.id).not.toBe(old.id);
+    expect(q.resume(old.id)).toBe(false);
+    expect(q.get(old.id)!.state).toBe("failed");
+    q.complete(q.claim()!.lease);
+    expect(q.resume(old.id)).toBe(true);
+  });
+
+  it("rejects async publish callbacks and rolls back their synchronous writes", () => {
+    const q = queue();
+    q.enqueue("render", "c1");
+    const { lease } = q.claim()!;
+    expect(() =>
+      q.publish(lease, (d) => {
+        d.prepare("INSERT INTO test_outputs (job_id, token) VALUES (?, 'sync-part')").run(lease.jobId);
+        return Promise.resolve();
+      }),
+    ).toThrow(/must be synchronous/);
+    expect(outputs()).toEqual([]);
+    expect(() => q.complete(lease, (() => Promise.resolve()) as never)).toThrow(/must be synchronous/);
+    expect(q.holds(lease)).toBe(true);
   });
 
   it("release returns the job without consuming an attempt", () => {

@@ -165,29 +165,54 @@ CREATE INDEX budget_reservations_day ON budget_reservations(day_utc, state);
 CREATE INDEX budget_reservations_book ON budget_reservations(book_id, state);
 `,
   },
+  {
+    version: 2,
+    name: "budget overrun and estimated-usage flags; usage per reservation",
+    sql: /* sql */ `
+-- overrun: settled actual usage exceeded the reservation (e.g. a low LLM input-token estimate).
+ALTER TABLE budget_reservations ADD COLUMN overrun INTEGER NOT NULL DEFAULT 0 CHECK (overrun IN (0, 1));
+-- usage_estimated: the provider did not report usage, so the reserved amount was recorded instead.
+ALTER TABLE budget_reservations ADD COLUMN usage_estimated INTEGER NOT NULL DEFAULT 0 CHECK (usage_estimated IN (0, 1));
+-- One usage row per reservation, so an uncertain outcome can be recorded and later replaced by settlement.
+ALTER TABLE usage ADD COLUMN reservation_id TEXT REFERENCES budget_reservations(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX usage_reservation ON usage(reservation_id);
+`,
+  },
 ];
 
-/** Apply pending migrations in order, each in its own transaction. Tracks progress via PRAGMA user_version. */
+/**
+ * Apply pending migrations in order, each in its own transaction. Tracks progress via PRAGMA user_version.
+ *
+ * The version is read only after BEGIN IMMEDIATE takes the write lock, so processes that open a
+ * fresh database at the same moment (web + worker on first boot) serialise: the second one waits,
+ * then sees the version the first one committed and skips that migration.
+ */
 export function migrate(db: DatabaseSync, migrations: readonly Migration[] = MIGRATIONS): number {
   for (let i = 0; i < migrations.length; i++) {
     if (migrations[i]!.version !== i + 1) {
       throw new Error(`migration versions must be contiguous from 1; got ${migrations[i]!.version} at index ${i}`);
     }
   }
-  const current = Number((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
-  if (current > migrations.length) {
-    throw new Error(`database schema version ${current} is newer than this build (${migrations.length})`);
-  }
-  for (const m of migrations.slice(current)) {
+  for (;;) {
     db.exec("BEGIN IMMEDIATE");
+    let m: Migration | undefined;
     try {
+      const current = Number((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
+      if (current > migrations.length) {
+        throw new Error(`database schema version ${current} is newer than this build (${migrations.length})`);
+      }
+      m = migrations[current];
+      if (!m) {
+        db.exec("COMMIT");
+        return migrations.length;
+      }
       db.exec(m.sql);
       db.exec(`PRAGMA user_version = ${m.version}`);
       db.exec("COMMIT");
     } catch (err) {
       db.exec("ROLLBACK");
+      if (!m) throw err;
       throw new Error(`migration ${m.version} (${m.name}) failed: ${(err as Error).message}`, { cause: err });
     }
   }
-  return migrations.length;
 }

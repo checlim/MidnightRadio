@@ -113,6 +113,80 @@ describe("runOnce", () => {
   });
 });
 
+describe("resilience", () => {
+  it("a throwing heartbeat is reported and does not crash the process", async () => {
+    const queue = q();
+    const { id } = queue.enqueue("render", "c1");
+    queue.heartbeat = () => {
+      throw new Error("database is locked");
+    };
+    const errors: unknown[] = [];
+    await runOnce({
+      queue,
+      heartbeatMs: 5,
+      onError: (e) => errors.push(e),
+      handlers: { render: async () => void (await sleep(40)) },
+    });
+    expect(queue.get(id)!.state).toBe("done");
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.every((e) => (e as Error).message === "database is locked")).toBe(true);
+  });
+
+  it("does not claim when the shutdown signal is already aborted", async () => {
+    const queue = q();
+    const { id } = queue.enqueue("render", "c1");
+    let ran = false;
+    const worked = await runOnce({ queue, signal: AbortSignal.abort(), handlers: { render: async () => void (ran = true) } });
+    expect(worked).toBe(false);
+    expect(ran).toBe(false);
+    expect(queue.get(id)).toMatchObject({ state: "queued", attempts: 0 });
+  });
+
+  it("runWorker keeps going after a claim error", async () => {
+    const queue = q();
+    queue.enqueue("render", "c1");
+    queue.enqueue("render", "c2");
+    const realClaim = queue.claim.bind(queue);
+    let calls = 0;
+    queue.claim = (kinds) => {
+      if (++calls === 1) throw new Error("database is locked");
+      return realClaim(kinds);
+    };
+    const done: string[] = [];
+    const errors: unknown[] = [];
+    const stop = new AbortController();
+    const worker = runWorker({
+      queue,
+      pollMs: 5,
+      signal: stop.signal,
+      onError: (e) => errors.push(e),
+      handlers: { render: async ({ job }) => void done.push(job.refId) },
+    });
+    while (done.length < 2) await sleep(5);
+    stop.abort();
+    await worker;
+    expect(done).toEqual(["c1", "c2"]);
+    expect((errors[0] as Error).message).toBe("database is locked");
+  });
+
+  it("a throwing onError reporter cannot stop the worker", async () => {
+    const queue = q();
+    const { id } = queue.enqueue("render", "c1");
+    await runOnce({
+      queue,
+      onError: () => {
+        throw new Error("logger down");
+      },
+      handlers: {
+        render: async () => {
+          throw new PermanentJobError("bad");
+        },
+      },
+    });
+    expect(queue.get(id)!.state).toBe("failed");
+  });
+});
+
 describe("budget integration", () => {
   it("parks a job as over_budget without calling the provider, and fences reservations by lease", async () => {
     db.prepare("INSERT INTO books (id, title, source_hash, status, created_at) VALUES ('b1', 'T', 'h', 'ready', 0)").run();

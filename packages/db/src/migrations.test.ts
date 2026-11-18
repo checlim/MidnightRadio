@@ -1,10 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MIGRATIONS, migrate } from "./migrations.js";
 import { openDb } from "./open.js";
+import { runConcurrently } from "./test-support/processes.js";
 
 const NOW = 1_700_000_000_000;
 let db: DatabaseSync;
@@ -55,10 +57,27 @@ describe("migrate", () => {
 
   it("rolls back a failing migration and leaves the version unchanged", () => {
     const bad = [...MIGRATIONS, { version: MIGRATIONS.length + 1, name: "bad", sql: "CREATE TABLE x (a); SELECT nope FROM missing;" }];
-    expect(() => migrate(db, bad)).toThrow(/migration 2 \(bad\) failed/);
+    expect(() => migrate(db, bad)).toThrow(new RegExp(`migration ${MIGRATIONS.length + 1} \\(bad\\) failed`));
     expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: MIGRATIONS.length });
     expect(db.prepare("SELECT name FROM sqlite_schema WHERE name = 'x'").get()).toBeUndefined();
   });
+
+  it("lets several processes open and migrate a fresh database file at the same time", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mr-boot-"));
+    try {
+      const child = join(dirname(fileURLToPath(import.meta.url)), "test-support/open-child.ts");
+      for (let trial = 0; trial < 5; trial++) {
+        const path = join(dir, `boot-${trial}.db`);
+        const out = await runConcurrently(child, Array.from({ length: 4 }, () => [path]));
+        expect(out).toEqual(["ok", "ok", "ok", "ok"]);
+        const d = openDb(path);
+        expect(d.prepare("PRAGMA user_version").get()).toEqual({ user_version: MIGRATIONS.length });
+        d.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it("persists across reopen of a file database", () => {
     const dir = mkdtempSync(join(tmpdir(), "mr-db-"));
