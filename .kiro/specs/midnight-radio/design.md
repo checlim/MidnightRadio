@@ -17,6 +17,7 @@ EPUB ─▶ Ingest ─▶ Cast ─▶ Adapt ─▶ Validate ─┬─▶ Render 
 | `apps/web` | Upload, cast editor, vintage valve-radio player | Next.js (App Router), Web Audio API |
 | `apps/worker` | Resumable job runner for the pipeline | Node 24, SQLite-backed job queue |
 | `packages/core` | Domain types, Script schema, quote extractor, validators | TypeScript, Zod, `fast-check` (PBT) |
+| `packages/db` | SQLite migrations, connection setup, spend ledger (shared by web and worker) | `node:sqlite` (built into Node 24; experimental, prints a warning) |
 | `packages/ingest` | EPUB → canonical chapters (inline-safe XHTML + quote norm) | `jszip` + HTML-to-text |
 | `packages/llm` | Casting and single-pass structured JSON adaptation | OpenAI-compatible client (provider-agnostic) |
 | `packages/tts` | `TtsProvider` interface, atomic render cache + providers | Cloud provider + `StubProvider` |
@@ -31,15 +32,18 @@ Seed immutable pre-rendered MP3/VTT/source fixtures from the image or a checksum
 
 ## Data Model (SQLite)
 
+Implemented in `packages/db/src/migrations.ts` (append-only, versioned with `PRAGMA user_version`). Timestamps are Unix epoch milliseconds.
+
 - `books(id, title, author, source_hash, char_budget, status, is_demo, created_at)`
-- `chapters(id, book_id, idx, title, part, source_text, canonical_text, quote_spans_json, normaliser_version, word_count, status)`
-- `cast_members(id, book_id, name, aliases_json, role, gender_hint, age_band, voice_id, description, added_in_chapter)`
-- `scripts(id, chapter_id, version, json, validation_json, fidelity, status)`
-- `segments(id, script_id, section, scene_idx, idx, kind, speaker, text, contains_verbatim_quote, sfx_id, delivery, cache_key, audio_path, duration_ms, status)` — `section` is coldOpen/scenes/close; `scene_idx` is nullable outside scenes; order is explicit.
-- `episodes(id, chapter_id, mp3_path, clean_mp3_path, vtt_path, duration_ms, lufs, true_peak)`
-- `jobs(id, kind, ref_id, state, attempts, lease_until, lease_token, error, updated_at)`
-- `usage(id, day_utc, book_id, chapter_id, llm_in, llm_out, tts_chars, wall_ms)` — `chapter_id` is nullable for book-wide casting.
-- `budget_reservations(id, job_id, day_utc, book_id, chapter_id, provider_request_id, llm_tokens, tts_chars, state)` — durable reservation/settlement state for concurrent calls and uncertain outcomes.
+- `chapters(id, book_id, idx, title, part, part_count, source_text, canonical_text, quote_spans_json, quote_parse_status, quote_diagnostics_json, quote_parser_version, normaliser_version, word_count, status)` — parts of a split chapter share `idx`; `(book_id, idx, part)` is unique. `quote_parse_status` is `pending`/`ok`/`ambiguous` (ambiguous fails closed).
+- `cast_members(id, book_id, name, aliases_json, role, gender_hint, age_band, voice_id, description, added_in_chapter)` — `(book_id, name)` unique; `(book_id, voice_id)` unique when set.
+- `scripts(id, chapter_id, version, json, validation_json, fidelity, status)` — `(chapter_id, version)` unique; fidelity in [0, 1].
+- `segments(id, script_id, section, scene_idx, idx, kind, speaker, text, contains_verbatim_quote, sfx_id, delivery, cache_key, audio_path, duration_ms, status)` — `section` is coldOpen/scenes/close; `scene_idx` is set exactly when `section = 'scenes'`; order is unique and explicit.
+- `episodes(id, chapter_id, mp3_path, clean_mp3_path, vtt_path, duration_ms, lufs, true_peak)` — one per chapter.
+- `jobs(id, kind, ref_id, state, attempts, lease_until, lease_token, error, created_at, updated_at)` — `running` requires a lease token and expiry; at most one `queued`/`running` job per `(kind, ref_id)`.
+- `usage(id, reservation_id, day_utc, book_id, chapter_id, llm_in, llm_out, tts_chars, wall_ms)` — one row per reservation; `chapter_id` is nullable for book-wide casting.
+- `budget_reservations(id, job_id, day_utc, book_id, chapter_id, provider_request_id, llm_tokens, tts_chars, actual_llm_tokens, actual_tts_chars, state, overrun, usage_estimated, created_at, updated_at)` — durable reservation/settlement state for concurrent calls and uncertain outcomes. `state` is `reserved`/`settled`/`released`/`uncertain`.
+- Deleting a Book cascades to its chapters, cast, scripts, segments and episodes, but only nulls the Book link on `usage` and `budget_reservations`, so spend history is kept.
 
 ## Script Schema (`packages/core`)
 
@@ -135,9 +139,9 @@ Backed by `assets/sfx/index.json` (CC0 or project-created assets with documented
 | Guardrail | Mechanism |
 |---|---|
 | Pre-rendered instant demos | *The Tell-Tale Heart* (or *House of Usher* excerpt) + *Dracula* Ch. 1 pre-seeded on `/data` — zero API cost for judges exploring the radio |
-| Per-Book character budget | Configurable cap (default 60,000 chars); jobs pause as `over_budget` before exceeding |
-| Global daily caps & rate limits | Before every paid request, transactionally reserve TTS characters or LLM input plus capped output tokens against UTC-day limits (`GLOBAL_DAILY_TTS_CHAR_LIMIT`, `GLOBAL_DAILY_LLM_TOKEN_LIMIT`). Include casting, repair attempts, retries and re-renders. Settle actual usage durably; retain conservative reservations for uncertain/billable failures instead of refunding blindly. Missing/zero budgets disable paid generation, not demo playback. |
-| Judge passkey (optional) | `UPLOAD_PASSKEY` gates all custom-generation triggers, including cast edits/retries; apply server-side rate limits regardless, including failed passkey attempts. Never log passkeys or put them in URLs; share through private judging credentials. Per-user book budgets cannot raise operator caps. |
+| Per-Book character budget | User-adjustable `books.char_budget` (default 60,000 chars), capped by the operator ceiling `BOOK_TTS_CHAR_LIMIT` (default 60,000); the effective limit is the lower of the two. Jobs pause as `over_budget` before exceeding |
+| Global daily caps & rate limits | Before every paid request, transactionally reserve TTS characters or LLM input plus capped output tokens against UTC-day limits (`GLOBAL_DAILY_TTS_CHAR_LIMIT`, `GLOBAL_DAILY_LLM_TOKEN_LIMIT`). Include casting, repair attempts, retries and re-renders. Settle actual usage durably; retain conservative reservations for uncertain/billable failures instead of refunding blindly. Missing/zero budgets disable paid generation, not demo playback; a malformed value fails startup. Settlement fails closed: usage the provider does not report is recorded as the reserved amount (`usage_estimated`), and usage above the reservation is recorded as-is (`overrun`) and counts toward the cap, so further calls are refused. LLM input tokens are an estimate, so one call can overshoot by its estimation error; use a conservative estimate. A paid result is kept even if recording its usage fails. |
+| Judge passkey (optional) | `UPLOAD_PASSKEY` gates all custom-generation triggers, including cast edits/retries; apply server-side rate limits regardless, including failed passkey attempts. The passkey travels in the `x-midnight-passkey` header and is compared in constant time. Never log passkeys or put them in URLs; share through private judging credentials. Per-user book budgets cannot raise operator caps. Rate-limit keys come from the platform's trusted client-IP header (never a raw `X-Forwarded-For`), with IPv6 grouped by /64. Limits are in memory (single replica): live entries are never evicted, and when the table is full new clients are refused until a window expires. |
 
 ## Error Handling
 

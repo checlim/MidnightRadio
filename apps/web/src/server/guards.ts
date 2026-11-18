@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
 
 /**
  * Server-side guard for every generation-triggering route (upload, adapt, render, cast edit, retry).
@@ -29,9 +30,21 @@ export const DEFAULT_GUARD_LIMITS = {
 
 export const PASSKEY_HEADER = "x-midnight-passkey";
 
+const GuardEnvSchema = z.object({
+  // Unset or blank disables the gate. The value is never included in error messages.
+  UPLOAD_PASSKEY: z
+    .string()
+    .optional()
+    .transform((s) => s?.trim() || undefined)
+    .refine((s) => s === undefined || s.length <= 512, "must be at most 512 characters"),
+});
+
 export function loadGuardConfig(env: Record<string, string | undefined> = process.env): GuardConfig {
-  const passkey = env.UPLOAD_PASSKEY?.trim();
-  return { passkey: passkey ? passkey : undefined, ...DEFAULT_GUARD_LIMITS };
+  const parsed = GuardEnvSchema.safeParse(env);
+  if (!parsed.success) {
+    throw new Error(`invalid guard configuration: ${parsed.error.issues.map((i) => `${String(i.path[0])} ${i.message}`).join("; ")}`);
+  }
+  return { passkey: parsed.data.UPLOAD_PASSKEY, ...DEFAULT_GUARD_LIMITS };
 }
 
 export type GuardResult =

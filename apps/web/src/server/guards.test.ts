@@ -31,6 +31,16 @@ describe("loadGuardConfig", () => {
     expect(loadGuardConfig({ UPLOAD_PASSKEY: "  " }).passkey).toBeUndefined();
     expect(loadGuardConfig({ UPLOAD_PASSKEY: " s3cret " }).passkey).toBe("s3cret");
   });
+
+  it("rejects an oversized passkey without echoing it", () => {
+    const huge = "k".repeat(513);
+    expect(() => loadGuardConfig({ UPLOAD_PASSKEY: huge })).toThrow("invalid guard configuration: UPLOAD_PASSKEY must be at most 512 characters");
+    try {
+      loadGuardConfig({ UPLOAD_PASSKEY: huge });
+    } catch (e) {
+      expect((e as Error).message).not.toContain("kkkk");
+    }
+  });
 });
 
 describe("passkeyMatches", () => {

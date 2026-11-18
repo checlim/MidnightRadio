@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { z } from "zod";
 import { BudgetExceededError } from "./errors.js";
 
 export interface BudgetConfig {
@@ -13,24 +14,55 @@ export interface BudgetConfig {
 
 export const DEFAULT_BOOK_TTS_CHAR_CEILING = 60_000;
 
+/** An optional non-negative integer env var: missing or blank → `fallback`; anything malformed fails. */
+const envCount = (fallback: number) =>
+  z
+    .string()
+    .optional()
+    .transform((s) => s?.trim() ?? "")
+    .pipe(
+      z.union([
+        z.literal("").transform(() => fallback),
+        z
+          .string()
+          .regex(/^\d+$/, "must be a non-negative integer")
+          .transform(Number)
+          .refine(Number.isSafeInteger, "is too large"),
+      ]),
+    );
+
+const BudgetEnvSchema = z.object({
+  GLOBAL_DAILY_TTS_CHAR_LIMIT: envCount(0),
+  GLOBAL_DAILY_LLM_TOKEN_LIMIT: envCount(0),
+  BOOK_TTS_CHAR_LIMIT: envCount(DEFAULT_BOOK_TTS_CHAR_CEILING),
+});
+
 /**
  * Read caps from the environment. Missing or "0" disables that kind of paid call (fail closed).
- * A malformed value throws so a misconfigured deployment fails loudly at startup.
+ * A malformed value throws so a misconfigured deployment fails loudly at startup. Error messages
+ * name the variable but never echo its value.
  */
 export function loadBudgetConfig(env: Record<string, string | undefined> = process.env): BudgetConfig {
-  const read = (name: string, fallback: number): number => {
-    const raw = env[name]?.trim();
-    if (raw === undefined || raw === "") return fallback;
-    if (!/^\d+$/.test(raw)) throw new Error(`${name} must be a non-negative integer`);
-    const n = Number(raw);
-    if (!Number.isSafeInteger(n)) throw new Error(`${name} is too large`);
-    return n;
-  };
+  const parsed = BudgetEnvSchema.safeParse(env);
+  if (!parsed.success) {
+    const problems = parsed.error.issues.map((i) => `${String(i.path[0])} ${lastMessage(i)}`);
+    throw new Error(`invalid budget configuration: ${problems.join("; ")}`);
+  }
+  const e = parsed.data;
   return {
-    dailyTtsChars: read("GLOBAL_DAILY_TTS_CHAR_LIMIT", 0),
-    dailyLlmTokens: read("GLOBAL_DAILY_LLM_TOKEN_LIMIT", 0),
-    bookTtsCharCeiling: read("BOOK_TTS_CHAR_LIMIT", DEFAULT_BOOK_TTS_CHAR_CEILING),
+    dailyTtsChars: e.GLOBAL_DAILY_TTS_CHAR_LIMIT,
+    dailyLlmTokens: e.GLOBAL_DAILY_LLM_TOKEN_LIMIT,
+    bookTtsCharCeiling: e.BOOK_TTS_CHAR_LIMIT,
   };
+}
+
+/** A union failure nests the useful message (e.g. "must be a non-negative integer") inside its branches. */
+function lastMessage(issue: z.core.$ZodIssue): string {
+  if (issue.code === "invalid_union") {
+    const inner = issue.errors.flat().find((i) => i.code !== "invalid_value");
+    if (inner) return lastMessage(inner);
+  }
+  return issue.message;
 }
 
 export interface ReservationRequest {

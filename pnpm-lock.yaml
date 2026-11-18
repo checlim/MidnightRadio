@@ -24,7 +24,11 @@ importers:
         specifier: ^3.2.0
         version: 3.2.7(@types/node@24.19.2)(tsx@4.23.15)
 
-  apps/web: {}
+  apps/web:
+    dependencies:
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
 
   apps/worker:
     dependencies:
@@ -40,7 +44,11 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
 
-  packages/db: {}
+  packages/db:
+    dependencies:
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/ingest: {}
 

@@ -6,10 +6,14 @@
   - Configure Vitest + `fast-check` across workspace packages
   - _Requirements: 3.1, 4.1_
 
-- [x] 2. SQLite persistence, resumable job queue, and spend guardrails
+- [ ] 2. SQLite persistence, resumable job queue, and spend guardrails
   - [x] 2.1 Migrations for `books`, `chapters` (with `canonical_text`), `cast_members`, `scripts`, `segments`, `episodes`, `jobs` (with `lease_until`), `usage` (with `day_utc`), and durable `budget_reservations`; include source quote inventory and parser/normaliser versions
-  - [x] 2.2 Resumable job runner (atomic claim, lease heartbeat, ownership fencing before publication, crash recovery on restart)
-  - [x] 2.3 Operator-controlled per-Book TTS budget + global daily TTS/LLM caps (`GLOBAL_DAILY_TTS_CHAR_LIMIT`, `GLOBAL_DAILY_LLM_TOKEN_LIMIT`); transactional reservations/settlement for every paid call, retries and uncertain outcomes; rate-limit all generation routes and optionally gate with `UPLOAD_PASSKEY`; missing/zero caps disable paid calls
+  - [ ] 2.2 Resumable job runner (atomic claim, lease heartbeat, ownership fencing before publication, crash recovery on restart)
+    - Done: `JobQueue` and `runOnce`/`runWorker` in `apps/worker/src/jobs/` (atomic claim, heartbeats, DB-write fencing, lease-expiry reclaim, multi-process claim test)
+    - Remaining: worker entrypoint that opens the `/data` database, runs `runWorker` and turns SIGTERM/SIGINT into the abort signal. Fencing of file outputs (episode MP3/VTT publication) lands with tasks 8–9
+  - [ ] 2.3 Operator-controlled per-Book TTS budget + global daily TTS/LLM caps (`GLOBAL_DAILY_TTS_CHAR_LIMIT`, `GLOBAL_DAILY_LLM_TOKEN_LIMIT`); transactional reservations/settlement for every paid call, retries and uncertain outcomes; rate-limit all generation routes and optionally gate with `UPLOAD_PASSKEY`; missing/zero caps disable paid calls
+    - Done: `BudgetLedger` in `packages/db` (reservations, fail-closed settlement, overrun/estimated flags, uncertain outcomes, `BOOK_TTS_CHAR_LIMIT` ceiling) and `GenerationGuard` in `apps/web/src/server/guards.ts` (rate limit, passkey, lockout, IPv6 /64 keys)
+    - Remaining: call the ledger from every paid LLM/TTS call (tasks 4, 6, 8) and apply the guard to every generation route with a trusted client IP (task 11), with a test covering each route
   - _Requirements: 8.1, 8.2, 8.4_
 
 - [ ] 3. EPUB ingestion and property-based parser verification

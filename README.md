@@ -13,11 +13,11 @@ Midnight Radio brings back the 1930s–1950s radio play. Give it a DRM-free EPUB
 Two promises guide the design:
 
 - **Every character keeps one voice for the whole book.**
-- **The story is told faithfully.** Dialogue is quoted verbatim and nothing is invented. Each script must pass an automated dialogue-fidelity check before any audio is generated.
+- **The story is told faithfully.** Dialogue is quoted verbatim and nothing is invented. The pipeline is designed so that every script must pass an automated dialogue-fidelity check before any audio is generated.
 
-The live demo ships pre-rendered public-domain Gothic fiction (*The Tell-Tale Heart*, *The Fall of the House of Usher*, *Dracula*), so listeners can tune in without triggering any paid generation.
+The planned live demo will ship pre-rendered public-domain Gothic fiction (*The Tell-Tale Heart*, *The Fall of the House of Usher*, *Dracula*), so listeners can tune in without triggering any paid generation.
 
-> **Status: early development.** The monorepo, Script schema, SQLite persistence, resumable job queue and spend guardrails are built and tested. Ingestion, adaptation, voice rendering, mixing and the radio player are not built yet. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
+> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue and runner library, the spend ledger and the generation-route guard. Not wired up yet: there is no worker entrypoint, and no route or paid call uses the guard or ledger. Not built yet: ingestion, adaptation, validation, voice rendering, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
 
 ## How it works
 
@@ -42,8 +42,8 @@ Full details are in [`design.md`](.kiro/specs/midnight-radio/design.md).
 
 ```
 apps/
-  web/              Next.js valve-radio player and upload UI (generation-route guards so far)
-  worker/           Resumable job runner: leases, heartbeats, crash recovery
+  web/              Valve-radio player and upload UI (planned, Next.js); so far only the generation-route guard
+  worker/           Job queue and runner library: leases, heartbeats, crash recovery (no entrypoint yet)
 packages/
   core/             Script schema (Zod) and JSON Schema generator; validators to come
   db/               SQLite migrations and the spend ledger (budget reservations)
@@ -86,7 +86,11 @@ Copy `.env.example` to `.env`. Secrets are read only from environment variables 
 | `BOOK_TTS_CHAR_LIMIT` | Operator ceiling on any one book's TTS budget (default 60,000). A user-chosen budget can't exceed it. |
 | `UPLOAD_PASSKEY` | Optional judge passkey for all custom generation, sent in the `x-midnight-passkey` header. Demo playback stays public. |
 
-Every paid call reserves its worst-case cost in SQLite before the provider is contacted. Calls that would exceed a cap are rejected, and the job is parked as `over_budget`.
+The spend ledger (`packages/db/src/budget.ts`) is built for every paid call to use, but no paid calls exist yet. It works like this:
+
+- **Reserving:** before the provider is contacted, the call reserves its expected cost in SQLite. Calls that would exceed a cap are rejected, and the job is parked as `over_budget`.
+- **Settling:** usage the provider doesn't report is recorded as the full reserved amount. Usage above the reservation is recorded and counts toward the cap, so later calls are refused.
+- **Estimates:** LLM input tokens are an estimate, so a single call can go over by its estimation error.
 
 ## Testing
 
@@ -94,10 +98,12 @@ Tests use [Vitest](https://vitest.dev) and [`fast-check`](https://fast-check.dev
 
 - Script schema bounds.
 - Lease fencing under random interleavings of workers and clock jumps: only the current lease holder can write, and a job completes at most once.
-- Budget caps under random reserve, settle, release and day-change sequences.
+- Budget caps under random reserve, settle, release and day-change sequences, including unreported usage and usage above the reservation.
 - Rate-limiter limits.
 
-CI uses a `StubProvider`, so tests never call paid APIs.
+Concurrency tests use real processes: several workers claiming from one queue, several processes reserving against one cap, and several processes opening a fresh database at once.
+
+Tests never call paid APIs. There is no CI pipeline yet; once voice rendering lands, tests will use a `StubProvider` that generates local audio.
 
 ## Built with Kiro
 
@@ -113,4 +119,4 @@ Agent hooks, the `sfx-library` MCP server and a `script-auditor` custom agent ar
 - Demo content is public-domain fiction only.
 - Midnight Radio does not circumvent DRM and does not clone real people's voices.
 - Generated episodes are AI-produced and will be labelled as such in the player.
-- Sound effects and music will be CC0 or project-created, with sources recorded in the asset catalogue.
+- Sound effects and music will be CC0 or project-created, with each asset's source and licence listed in `ATTRIBUTION.md`.

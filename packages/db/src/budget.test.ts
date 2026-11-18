@@ -55,6 +55,25 @@ describe("loadBudgetConfig", () => {
       expect(() => loadBudgetConfig({ GLOBAL_DAILY_TTS_CHAR_LIMIT: bad })).toThrow(/GLOBAL_DAILY_TTS_CHAR_LIMIT/);
     }
   });
+
+  it("explains what is wrong without echoing the value, and reports every bad variable", () => {
+    const message = (env: Record<string, string>) => {
+      try {
+        loadBudgetConfig(env);
+      } catch (e) {
+        return (e as Error).message;
+      }
+      return "";
+    };
+    expect(message({ GLOBAL_DAILY_TTS_CHAR_LIMIT: "secret-ish-1.5" })).toBe(
+      "invalid budget configuration: GLOBAL_DAILY_TTS_CHAR_LIMIT must be a non-negative integer",
+    );
+    expect(message({ BOOK_TTS_CHAR_LIMIT: "99999999999999999999" })).toMatch(/BOOK_TTS_CHAR_LIMIT is too large/);
+    const both = message({ GLOBAL_DAILY_TTS_CHAR_LIMIT: "x", GLOBAL_DAILY_LLM_TOKEN_LIMIT: "y" });
+    expect(both).toMatch(/GLOBAL_DAILY_TTS_CHAR_LIMIT/);
+    expect(both).toMatch(/GLOBAL_DAILY_LLM_TOKEN_LIMIT/);
+    expect(both).not.toMatch(/"x"|"y"/);
+  });
 });
 
 describe("reserve", () => {
