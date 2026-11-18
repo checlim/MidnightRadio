@@ -128,3 +128,9 @@ Agent hooks, the `sfx-library` MCP server and a `script-auditor` custom agent ar
 - Midnight Radio does not circumvent DRM and does not clone real people's voices.
 - Generated episodes are AI-produced and will be labelled as such in the player.
 - Sound effects and music will be CC0 or project-created, with each asset's source and licence listed in `ATTRIBUTION.md`.
+
+## License
+
+The source code is released under the [MIT License](LICENSE).
+
+Bundled books, sound effects and music are not covered by that licence. They keep their own terms, which will be listed in `ATTRIBUTION.md`. The books are public-domain texts, and the Standard Ebooks editions' markup is dedicated to the public domain under CC0.

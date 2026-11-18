@@ -1,6 +1,7 @@
 {
   "name": "midnight-radio",
   "private": true,
+  "license": "MIT",
   "packageManager": "pnpm@10.18.0",
   "engines": { "node": ">=24" },
   "scripts": {
