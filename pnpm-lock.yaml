@@ -55,6 +55,9 @@ importers:
 
   packages/ingest:
     dependencies:
+      '@midnight-radio/core':
+        specifier: workspace:*
+        version: link:../core
       domhandler:
         specifier: ^6.0.1
         version: 6.0.1

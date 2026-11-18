@@ -1,3 +1,4 @@
+import { NORMALISER_VERSION, canonicaliseText } from "@midnight-radio/core";
 import type { Block, ExtractedDocument } from "./extract.js";
 import type { TocEntry } from "./opf.js";
 
@@ -11,9 +12,15 @@ export interface Chapter {
   title: string;
   /** Story blocks, without the chapter's own leading heading(s). Breaks are kept for task 3.3. */
   blocks: Block[];
-  /** Paragraphs and in-chapter headings joined by blank lines; breaks render as nothing. */
-  text: string;
-  /** Whitespace-delimited tokens in `text`. */
+  /**
+   * Extracted text: paragraphs and in-chapter headings joined by blank lines (breaks render as
+   * nothing). Never typography-folded, so quote extraction can tell ’ from '.
+   */
+  sourceText: string;
+  /** `canonicaliseText(sourceText)`: what adaptation and the splitter work on. */
+  canonicalText: string;
+  normaliserVersion: string;
+  /** Whitespace-delimited tokens in `canonicalText`. */
   wordCount: number;
   /** Archive path of the document where the chapter starts. */
   href: string;
@@ -67,14 +74,24 @@ export function buildChapters(docs: SpineDocument[], toc: TocEntry[]): Chapter[]
   const chapters: Chapter[] = [];
   for (const r of raw) {
     const { headings, body } = splitLeadingHeadings(tidyBreaks(r.blocks));
-    const text = body
+    const sourceText = body
       .filter((b) => b.kind !== "break")
       .map((b) => (b as { text: string }).text)
       .join("\n\n");
-    const wordCount = countWords(text);
+    const canonicalText = canonicaliseText(sourceText);
+    const wordCount = countWords(canonicalText);
     if (wordCount === 0 || (r.leading && wordCount < MIN_LEADING_WORDS)) continue;
     const title = r.title || headings.join(" — ") || `Chapter ${chapters.length + 1}`;
-    chapters.push({ idx: chapters.length, title, blocks: body, text, wordCount, href: r.href });
+    chapters.push({
+      idx: chapters.length,
+      title,
+      blocks: body,
+      sourceText,
+      canonicalText,
+      normaliserVersion: NORMALISER_VERSION,
+      wordCount,
+      href: r.href,
+    });
   }
   return chapters;
 }
