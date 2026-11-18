@@ -17,7 +17,7 @@ Two promises guide the design:
 
 The planned live demo will ship pre-rendered public-domain Gothic fiction (*The Tell-Tale Heart*, *The Fall of the House of Usher*, *Dracula*), so listeners can tune in without triggering any paid generation.
 
-> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue and runner library, the spend ledger and the generation-route guard. Not wired up yet: there is no worker entrypoint, and no route or paid call uses the guard or ledger. Not built yet: ingestion, adaptation, validation, voice rendering, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
+> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue, the worker process, the spend ledger and the generation-route guard. Not wired up yet: the worker has no job handlers, and no route or paid call uses the guard or ledger. Not built yet: ingestion, adaptation, validation, voice rendering, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
 
 ## How it works
 
@@ -43,7 +43,7 @@ Full details are in [`design.md`](.kiro/specs/midnight-radio/design.md).
 ```
 apps/
   web/              Valve-radio player and upload UI (planned, Next.js); so far only the generation-route guard
-  worker/           Job queue and runner library: leases, heartbeats, crash recovery (no entrypoint yet)
+  worker/           Worker process and job queue: leases, heartbeats, crash recovery (no job handlers yet)
 packages/
   core/             Script schema (Zod) and JSON Schema generator; validators to come
   db/               SQLite migrations and the spend ledger (budget reservations)
@@ -69,6 +69,12 @@ pnpm typecheck
 pnpm test
 ```
 
+Run the worker locally (it creates and migrates the database in `DATA_DIR`, then waits for jobs; stop it with Ctrl+C):
+
+```sh
+DATA_DIR=./data pnpm -C apps/worker start
+```
+
 Regenerate the Script JSON Schema after editing `packages/core/src/schema.ts`:
 
 ```sh
@@ -81,6 +87,8 @@ Copy `.env.example` to `.env`. Secrets are read only from environment variables 
 
 | Variable | Purpose |
 |---|---|
+| `DATA_DIR` | Persistent directory for the SQLite database (default `/data`). |
+| `WORKER_SHUTDOWN_TIMEOUT_MS` | How long the worker waits on SIGTERM to release its current job before exiting (default 4,000, below Fly.io's 5 s and Docker's 10 s kill timeouts). |
 | `GLOBAL_DAILY_TTS_CHAR_LIMIT` | TTS characters allowed per UTC day. Missing or `0` disables paid TTS. |
 | `GLOBAL_DAILY_LLM_TOKEN_LIMIT` | LLM tokens (input plus capped output) allowed per UTC day. Missing or `0` disables paid LLM calls. |
 | `BOOK_TTS_CHAR_LIMIT` | Operator ceiling on any one book's TTS budget (default 60,000). A user-chosen budget can't exceed it. |

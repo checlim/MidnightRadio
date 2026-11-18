@@ -4,6 +4,9 @@ coverage/
 .env
 .env.*
 !.env.example
-/data/
+data/
+*.db
+*.db-wal
+*.db-shm
 *.wav.tmp
 .DS_Store

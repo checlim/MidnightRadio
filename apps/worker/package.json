@@ -5,10 +5,12 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
+    "start": "node --import tsx src/main.ts",
     "typecheck": "tsc -p .",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@midnight-radio/db": "workspace:*"
+    "@midnight-radio/db": "workspace:*",
+    "zod": "^4.6.7"
   }
 }
