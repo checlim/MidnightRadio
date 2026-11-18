@@ -17,7 +17,9 @@
   - _Requirements: 8.1, 8.2, 8.4_
 
 - [ ] 3. EPUB ingestion and property-based parser verification
-  - [ ] 3.1 Parse OPF spine, strip nav/TOC/front matter/footnotes/images, and implement inline-safe XHTML → text extraction (preserve adjacency across `<em>`/`<span>`/drop-caps; preserve existing whitespace and break at block tags plus `<br>`/`<hr>`)
+  - [x] 3.1 Parse OPF spine, strip nav/TOC/front matter/footnotes/images, and implement inline-safe XHTML → text extraction (preserve adjacency across `<em>`/`<span>`/drop-caps; preserve existing whitespace and break at block tags plus `<br>`/`<hr>`)
+    - Done: `ingestEpub()` in `packages/ingest` (container → OPF → nav/NCX → spine XHTML → chapters split at TOC entries across files and anchors). Whitespace runs fold to one space as a browser renders them (never removed); `<hr>` and empty paragraphs become break blocks for 3.3. Checked against Standard Ebooks' *Dracula* (28 chapters) and Poe *Short Fiction* (66 stories)
+    - Also in place for 3.2 (tests still to add there): DRM, not-an-EPUB, damaged, no-text and size rejections; ZIP entry-count, path, symlink, size, ratio, total-inflation and deadline limits; rejection of XML entity declarations
   - [ ] 3.2 Versioned typography/quote comparison normaliser; preserve source layout and extract quotes before folding directional marks. Reject DRM/malformed/empty/>20 MB files, ZIP traversal/bombs and external entities; never fetch external EPUB resources
   - [ ] 3.3 Scene-break detection before whitespace folding and >8,000-word splitter ("Part 1 of N"), with sentence/word fallback for oversized paragraphs and source-mapped quote fragments at part boundaries
   - [ ] 3.4 Property-based tests (`fast-check`): splitter ≤8,000-word bound + exact non-whitespace token preservation; normalisation idempotence + inline-tag adjacency

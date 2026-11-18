@@ -18,7 +18,7 @@ EPUB ─▶ Ingest ─▶ Cast ─▶ Adapt ─▶ Validate ─┬─▶ Render 
 | `apps/worker` | Resumable job runner for the pipeline | Node 24, SQLite-backed job queue |
 | `packages/core` | Domain types, Script schema, quote extractor, validators | TypeScript, Zod, `fast-check` (PBT) |
 | `packages/db` | SQLite migrations, connection setup, spend ledger (shared by web and worker) | `node:sqlite` (built into Node 24; experimental, prints a warning) |
-| `packages/ingest` | EPUB → canonical chapters (inline-safe XHTML + quote norm) | `jszip` + HTML-to-text |
+| `packages/ingest` | EPUB → canonical chapters (inline-safe XHTML + quote norm) | `yauzl` (central-directory sizes checked before inflating; inflation capped at declared size) + `htmlparser2` (no external fetches) |
 | `packages/llm` | Casting and single-pass structured JSON adaptation | OpenAI-compatible client (provider-agnostic) |
 | `packages/tts` | `TtsProvider` interface, atomic render cache + providers | Cloud provider + `StubProvider` |
 | `packages/mix` | Scene assembly, sidechain ducking, AM filter, loudness | `ffmpeg` via single logged wrapper |
