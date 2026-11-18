@@ -17,7 +17,7 @@ Two promises guide the design:
 
 The planned live demo will ship pre-rendered public-domain Gothic fiction (*The Tell-Tale Heart*, *The Fall of the House of Usher*, *Dracula*), so listeners can tune in without triggering any paid generation.
 
-> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue, the worker process, the spend ledger and the generation-route guard. Not wired up yet: the worker has no job handlers, and no route or paid call uses the guard or ledger. Not built yet: ingestion, adaptation, validation, voice rendering, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
+> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue, the worker process, the spend ledger, the generation-route guard, EPUB ingestion (chapters, scene breaks, part splitting, text normaliser) and the bundled demo books. Not wired up yet: the worker has no job handlers, and no route or paid call uses the guard or ledger. Not built yet: casting, adaptation, validation, voice rendering, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
 
 ## How it works
 
@@ -47,12 +47,14 @@ apps/
 packages/
   core/             Script schema (Zod) and JSON Schema generator; validators to come
   db/               SQLite migrations and the spend ledger (budget reservations)
-  ingest/           EPUB to canonical chapters (planned)
+  ingest/           Safe EPUB reading, chapter text, scene breaks and the 8,000-word splitter
   llm/              Casting and adaptation behind a provider-agnostic interface (planned)
   tts/              TtsProvider interface, render cache and StubProvider (planned)
   mix/              ffmpeg wrapper, ducking and loudness (planned)
 mcp/
   sfx-library/      MCP server for curating CC0 sound assets in Kiro (planned)
+fixtures/
+  books/            Public-domain Standard Ebooks EPUBs, checksum-pinned, with demo selections (manifest.json)
 .kiro/
   specs/            Requirements, design and task plan
   steering/         Product, tech and radio-script style guides for Kiro

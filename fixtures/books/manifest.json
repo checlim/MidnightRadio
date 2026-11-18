@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "books": [
+    {
+      "id": "dracula",
+      "file": "bram-stoker_dracula.epub",
+      "sha256": "8e4804d69819f5e5f32574d541c037f8317cbff11a03987a847ace43acbc3c38",
+      "bytes": 633867,
+      "title": "Dracula",
+      "author": "Bram Stoker",
+      "firstPublished": 1897,
+      "edition": "Standard Ebooks",
+      "editionUrl": "https://standardebooks.org/ebooks/bram-stoker/dracula",
+      "editionRevision": "70f97b6",
+      "editionReleased": "2026-11-15",
+      "textRights": "Public domain in the United States",
+      "editionRights": "CC0-1.0",
+      "chapterCount": 28
+    },
+    {
+      "id": "poe-short-fiction",
+      "file": "edgar-allan-poe_short-fiction.epub",
+      "sha256": "ea4a6097e2544b8f8590b7ebf10139979783957fe0c7e7d8c0ba8ca1ed1c707c",
+      "bytes": 1279657,
+      "title": "Short Fiction",
+      "author": "Edgar Allan Poe",
+      "firstPublished": 1849,
+      "edition": "Standard Ebooks",
+      "editionUrl": "https://standardebooks.org/ebooks/edgar-allan-poe/short-fiction",
+      "editionRevision": "ba71495",
+      "editionReleased": "2026-11-15",
+      "textRights": "Public domain in the United States",
+      "editionRights": "CC0-1.0",
+      "chapterCount": 66
+    }
+  ],
+  "selections": [
+    {
+      "id": "tell-tale-heart",
+      "role": "demo-station",
+      "book": "poe-short-fiction",
+      "chapterTitle": "The Telltale Heart",
+      "displayTitle": "The Tell-Tale Heart",
+      "label": "Complete story. The Standard Ebooks edition uses the modernised title “The Telltale Heart”.",
+      "expectedWords": 2075,
+      "startsWith": "True!—nervous—very, very dreadfully nervous",
+      "endsWith": "it is the beating of his hideous heart!”"
+    },
+    {
+      "id": "dracula-ch1",
+      "role": "demo-station",
+      "book": "dracula",
+      "chapterTitle": "I",
+      "displayTitle": "Dracula, Chapter I",
+      "label": "Complete chapter.",
+      "expectedWords": 5690,
+      "startsWith": "Jonathan Harker’s Journal.",
+      "endsWith": "whose broken battlements showed a jagged line against the moonlit sky."
+    },
+    {
+      "id": "usher",
+      "role": "atmosphere",
+      "book": "poe-short-fiction",
+      "chapterTitle": "The Fall of the House of Usher",
+      "displayTitle": "The Fall of the House of Usher",
+      "label": "Complete story.",
+      "expectedWords": 7048,
+      "startsWith": "Son cœur est un luth suspendu;",
+      "endsWith": "closed sullenly and silently over the fragments of the “House of Usher.”"
+    },
+    {
+      "id": "dracula-arrival",
+      "role": "dialogue-showcase",
+      "book": "dracula",
+      "chapterTitle": "II",
+      "displayTitle": "Dracula, Chapter II: Arrival at the Castle",
+      "label": "Excerpt: a contiguous passage from Chapter II, from the Count’s first appearance to the end of that evening’s journal entry. Nothing added or removed within it.",
+      "excerpt": {
+        "from": "Within, stood a tall old man, clean shaven save for a long white moustache",
+        "to": "God keep me, if only for the sake of those dear to me!"
+      },
+      "expectedWords": 1412,
+      "speakers": [
+        { "name": "Count Dracula", "line": "“I am Dracula; and I bid you welcome, Mr. Harker, to my house." },
+        { "name": "Jonathan Harker", "line": "“Count Dracula?”" }
+      ]
+    },
+    {
+      "id": "dracula-continuity",
+      "role": "continuity",
+      "book": "dracula",
+      "chapterTitles": ["I", "II"],
+      "sharedCharacters": [
+        { "name": "Jonathan Harker", "mentions": ["Harker"] },
+        { "name": "Count Dracula", "mentions": ["Count", "Dracula"] }
+      ]
+    }
+  ]
+}

@@ -16,7 +16,7 @@
     - Remaining: call the ledger from every paid LLM/TTS call (tasks 4, 6, 8) and apply the guard to every generation route with a trusted client IP (task 11), with a test covering each route
   - _Requirements: 8.1, 8.2, 8.4_
 
-- [ ] 3. EPUB ingestion and property-based parser verification
+- [x] 3. EPUB ingestion and property-based parser verification
   - [x] 3.1 Parse OPF spine, strip nav/TOC/front matter/footnotes/images, and implement inline-safe XHTML → text extraction (preserve adjacency across `<em>`/`<span>`/drop-caps; preserve existing whitespace and break at block tags plus `<br>`/`<hr>`)
     - Done: `ingestEpub()` in `packages/ingest` (container → OPF → nav/NCX → spine XHTML → chapters split at TOC entries across files and anchors). Whitespace runs fold to one space as a browser renders them (never removed); `<hr>` and empty paragraphs become break blocks for 3.3. Checked against Standard Ebooks' *Dracula* (28 chapters) and Poe *Short Fiction* (66 stories)
     - Also in place for 3.2 (tests still to add there): DRM, not-an-EPUB, damaged, no-text and size rejections; ZIP entry-count, path, symlink, size, ratio, total-inflation and deadline limits; rejection of XML entity declarations
@@ -28,7 +28,9 @@
     - Note: quote spans come from the 7.1 parser; until then ingestion passes none
   - [x] 3.4 Property-based tests (`fast-check`): splitter ≤8,000-word bound + exact non-whitespace token preservation; normalisation idempotence + inline-tag adjacency
     - Done: `split.property.test.ts` (limit, exact ordered slices, canonical token sequence and labels at small limits and at 8,000 words for chapters up to 30,000 words, with oversized paragraphs, huge tokens, invisible joiners and quote fragments); `normalise.property.test.ts` (idempotence, NFC output, no lost letters/case/punctuation, paragraph structure); `extract.property.test.ts` (words split across nested inline tags stay whole; whitespace in or around tags becomes one space). Each property was shown to catch a deliberately planted bug
-  - [ ] 3.5 Bundle public-domain Gothic fixtures (*The Tell-Tale Heart* / *House of Usher* for atmosphere + *Dracula* Ch. 1 for demo playback; add a source-supported dialogue passage and at least two chapters sharing a character for continuity tests)
+  - [x] 3.5 Bundle public-domain Gothic fixtures (*The Tell-Tale Heart* / *House of Usher* for atmosphere + *Dracula* Ch. 1 for demo playback; add a source-supported dialogue passage and at least two chapters sharing a character for continuity tests)
+    - Done: Standard Ebooks *Dracula* and Poe *Short Fiction* in `fixtures/books/`, pinned by SHA-256 in `manifest.json` with edition URL and revision; credited in `ATTRIBUTION.md`. Selections: demo stations "The Tell-Tale Heart" (2,075 words) and *Dracula* Ch. I (5,690); "Usher" (7,048) for atmosphere; dialogue showcase = contiguous Ch. II excerpt (1,412 words, Count Dracula and Jonathan Harker); continuity = Ch. I and II (Harker, the Count). `fixtures.ts` loads and verifies them; tests pin word counts and boundaries
+    - Note: this edition modernises some spellings ("The Telltale Heart"); fidelity is checked against the bundled edition. Pre-rendered demo audio is task 12.2
   - _Requirements: 1.1–1.6_
 
 - [ ] 4. Deterministic casting
