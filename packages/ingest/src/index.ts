@@ -1,4 +1,5 @@
-export { countWords, type Chapter } from "./chapters.js";
+export { countWords, isOrnament, type Chapter } from "./chapters.js";
+export { MAX_PART_WORDS, splitChapter, type ChapterPart, type QuoteFragment, type QuoteSpan } from "./split.js";
 export { ingestEpub, type IngestedBook, type IngestOptions } from "./epub.js";
 export { IngestError, type IngestErrorCode } from "./errors.js";
 export type { Block } from "./extract.js";

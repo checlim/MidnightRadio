@@ -1,6 +1,7 @@
 import { NORMALISER_VERSION, canonicaliseText } from "@midnight-radio/core";
 import type { Block, ExtractedDocument } from "./extract.js";
 import type { TocEntry } from "./opf.js";
+import { splitChapter, type ChapterPart } from "./split.js";
 
 export interface SpineDocument extends ExtractedDocument {
   path: string;
@@ -24,6 +25,19 @@ export interface Chapter {
   wordCount: number;
   /** Archive path of the document where the chapter starts. */
   href: string;
+  /** Adaptation units: one unlabelled part, or "Part 1 of N" pieces of at most 8,000 words (Req 1.5). */
+  parts: ChapterPart[];
+}
+
+/**
+ * A paragraph made only of separator marks is a scene break, not story text: `* * *`, `***`,
+ * `⁂`, `§`, `~ ~ ~`, `• • •`, `—`. No letters or digits, at most 30 characters.
+ */
+const ORNAMENT = /^[\s*⁂•·∙◆◇❖✦✧❧☙✻✽❦#§~=_.\-–—]{1,30}$/u;
+export const isOrnament = (text: string): boolean => ORNAMENT.test(text) && /\S/.test(text);
+
+function ornamentsToBreaks(blocks: Block[]): Block[] {
+  return blocks.map((b) => (b.kind === "paragraph" && isOrnament(b.text) ? { kind: "break", marker: "ornament" } : b));
 }
 
 /** Untitled text before the first TOC entry becomes a chapter only if it is at least this long. */
@@ -73,7 +87,7 @@ export function buildChapters(docs: SpineDocument[], toc: TocEntry[]): Chapter[]
 
   const chapters: Chapter[] = [];
   for (const r of raw) {
-    const { headings, body } = splitLeadingHeadings(tidyBreaks(r.blocks));
+    const { headings, body } = splitLeadingHeadings(tidyBreaks(ornamentsToBreaks(r.blocks)));
     const sourceText = body
       .filter((b) => b.kind !== "break")
       .map((b) => (b as { text: string }).text)
@@ -91,6 +105,7 @@ export function buildChapters(docs: SpineDocument[], toc: TocEntry[]): Chapter[]
       normaliserVersion: NORMALISER_VERSION,
       wordCount,
       href: r.href,
+      parts: splitChapter(body, sourceText),
     });
   }
   return chapters;
@@ -115,7 +130,7 @@ function tidyBreaks(blocks: Block[]): Block[] {
       const prev = out.at(-1);
       if (!prev) continue;
       if (prev.kind === "break") {
-        if (b.marker === "hr") out[out.length - 1] = b; // an explicit rule outranks a blank paragraph
+        if (prev.marker === "blank" && b.marker !== "blank") out[out.length - 1] = b; // a real scene break outranks a blank paragraph
         continue;
       }
     }

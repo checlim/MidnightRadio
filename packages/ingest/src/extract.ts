@@ -4,8 +4,11 @@ import { attr, epubTypes, localName } from "./xml.js";
 export type Block =
   | { kind: "paragraph"; text: string }
   | { kind: "heading"; level: number; text: string }
-  /** `hr`: an explicit break. `blank`: an empty paragraph, which may or may not mark a scene break (task 3.3 decides). */
-  | { kind: "break"; marker: "hr" | "blank" };
+  /**
+   * `hr`: an explicit rule. `ornament`: a paragraph of only separator marks (`* * *`, `⁂`).
+   * Both are scene breaks. `blank`: an empty paragraph, a weaker hint (often just spacing).
+   */
+  | { kind: "break"; marker: "hr" | "ornament" | "blank" };
 
 export interface ExtractedDocument {
   blocks: Block[];
