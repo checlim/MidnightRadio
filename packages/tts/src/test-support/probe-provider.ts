@@ -13,6 +13,8 @@ export class ProbeProvider extends StubProvider {
   sawAbort = false;
   delayMs = 0;
   failWith: Error | undefined;
+  /** Decide per call whether to fail: return an error to throw it, or undefined to render normally. */
+  failure: ((req: SynthesisRequest, call: number) => Error | undefined) | undefined;
   /** Replace the audio returned for a request (e.g. garbage, or a wrong format). */
   output: ((req: SynthesisRequest) => Buffer) | undefined;
   fingerprints = new Map<string, string>();
@@ -50,6 +52,8 @@ export class ProbeProvider extends StubProvider {
         });
         if (opts.signal?.aborted) throw new TtsError("aborted", "render aborted", false, false);
       }
+      const injected = this.failure?.(req, this.calls);
+      if (injected) throw injected;
       if (this.failWith) throw this.failWith;
       return this.output ? this.output(req) : await super.synthesize(req, opts);
     } finally {

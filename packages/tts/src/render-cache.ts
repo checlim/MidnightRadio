@@ -76,7 +76,7 @@ const isNotFound = (err: unknown) => (err as NodeJS.ErrnoException)?.code === "E
 
 export class RenderCache {
   readonly stats: CacheStats = { hits: 0, renders: 0, repaired: 0 };
-  private readonly provider: TtsProvider;
+  readonly provider: TtsProvider;
   private readonly dir: string;
   private readonly around: RenderCacheOptions["around"];
   private readonly hooks: NonNullable<RenderCacheOptions["hooks"]>;
@@ -95,6 +95,16 @@ export class RenderCache {
 
   pathFor(key: string): string {
     return join(this.dir, `${key}.wav`);
+  }
+
+  /** The cache key for a request. Throws "rejected" for an invalid request or unknown voice. */
+  keyOf(request: SynthesisRequest): string {
+    return this.keyFor(request).key;
+  }
+
+  /** Whether a file is published under this key. Cheaper than `lookup` (no validation), for estimates. */
+  async isPublished(key: string): Promise<boolean> {
+    return stat(this.pathFor(key)).then((s) => s.isFile(), () => false);
   }
 
   /** The cached audio for this request, if a valid file exists. Never renders. */

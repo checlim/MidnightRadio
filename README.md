@@ -17,7 +17,7 @@ Two promises guide the design:
 
 The planned live demo will ship pre-rendered public-domain Gothic fiction (*The Tell-Tale Heart*, *The Fall of the House of Usher*, *Dracula*), so listeners can tune in without triggering any generation. The live site will only play these pre-rendered episodes; generating new ones happens on a local machine.
 
-> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue, the worker process, the spend ledger, the generation-route guard, EPUB ingestion (chapters, scene breaks, part splitting, text normaliser), the bundled demo books, casting (character extraction and voice assignment) and the TTS provider interface with WAV validation and the atomic render cache. Not wired up yet: the worker has no job handlers, and no route or paid call uses the guard or ledger. Not built yet: the local audio service and real voice rendering, adaptation, validation, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
+> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue, the worker process, the spend ledger, the generation-route guard, EPUB ingestion (chapters, scene breaks, part splitting, text normaliser), the bundled demo books, casting (character extraction and voice assignment) and the TTS provider interface with WAV validation, the atomic render cache, and per-line rendering with retries and a pre-render plan. Not wired up yet: the worker has no job handlers, and no route or paid call uses the guard or ledger. Not built yet: the local audio service and real voice rendering, adaptation, validation, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
 
 ## How it works
 
@@ -49,7 +49,7 @@ packages/
   db/               SQLite migrations and the spend ledger (budget reservations)
   ingest/           Safe EPUB reading, chapter text, scene breaks and the 8,000-word splitter
   llm/              Casting and adaptation behind a provider-agnostic interface (planned)
-  tts/              TtsProvider interface, strict WAV validation and an offline StubProvider; atomic render cache; QwenTtsProvider planned
+  tts/              TtsProvider interface, strict WAV validation, an offline StubProvider, the atomic render cache and per-line retries; QwenTtsProvider planned
   mix/              ffmpeg wrapper, ducking and loudness (planned)
 services/
   local-audio/      Local Python host for Qwen3-TTS and MOSS-SoundEffect v2.0, used only on the generation machine (planned)
