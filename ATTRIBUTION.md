@@ -30,6 +30,8 @@ The reference clips in `assets/voices/clips/` were generated for this project wi
 
 Take N of a voice was rendered with seed 1940 + N − 1; the chosen take per voice is recorded in `assets/voices/picks.json`, and each clip's SHA-256 in `assets/voices/catalogue.json`. Character lines are cloned from these clips at render time with Qwen3-TTS 1.7B Base (Apache-2.0).
 
+**Licence:** the voice clips, their designs (`voices.json`), the take choices (`picks.json`) and the catalogue (`catalogue.json`) are dedicated to the public domain under [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/). To the extent possible under law, the authors have waived all copyright and related rights in them. See `assets/voices/LICENSE.md`.
+
 ## Sound effects and music
 
 None bundled yet. Each CC0 or project-created asset will be listed here with its source and licence when the sound library is added (task 6).
