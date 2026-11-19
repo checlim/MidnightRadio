@@ -45,7 +45,12 @@
   - _Requirements: 2.1–2.6_
 
 - [ ] 5. `sfx-library` MCP server and CC0 foley pack
-  - [ ] 5.1 Curate 30–50 CC0 Gothic radio foley & music cues (thunder, rain bed, carriage wheels, heavy door creak, hearth fire, footsteps, clock chime, theme/sting/transition) into `assets/sfx/index.json` + `ATTRIBUTION.md`
+  - [ ] 5.1 Curate 30–50 Gothic radio foley & music cues (thunder, rain bed, carriage wheels, heavy door creak, hearth fire, footsteps, clock chime, theme/sting/transition) into `assets/sfx/index.json` + `ATTRIBUTION.md`. Foley may be CC0 or generated offline with MOSS-SoundEffect v2.0 (Apache 2.0, run locally through `services/local-audio` from 8.1, never at runtime or in CI); music cues stay CC0 or hand-made
+    - Confirm the model licence on the Hugging Face model card before generating
+    - Keep a reproducible prompt list (`assets/sfx/prompts.json`: prompt, seed, target duration, model version + weights hash); generate several takes per cue and choose by ear
+    - Keep 48 kHz originals as masters; commit 24 kHz mono 16-bit WAVs, peak-normalised and checked for clicks
+    - Crossfade-loop and listen-test ambience beds before setting `loopable: true`
+    - `ATTRIBUTION.md`: CC0 assets list source URL + licence; generated assets list model, version, weights hash, prompt, seed and date
   - [ ] 5.2 Implement stdio MCP server (`search_sfx`, `get_sfx`, `list_music_cues`, `audit_script_sfx`); register in `.kiro/settings/mcp.json` and create `script-auditor` via the installed Kiro version's supported UI/schema; record limitations if unavailable. Use the same versioned catalogue, pinned cue map and kind/loopability checks at runtime and in MCP
   - _Requirements: 3.5, 9.2_
 
@@ -62,10 +67,14 @@
   - _Requirements: 4.1–4.4_
 
 - [ ] 8. TTS rendering with atomic cache
-  - [ ] 8.1 `TtsProvider` interface, offline `StubProvider` (valid 24 kHz 16-bit mono WAV proportional to word count), and cloud TTS provider
+  - [ ] 8.1 `TtsProvider` interface, offline `StubProvider` (valid 24 kHz 16-bit mono WAV proportional to word count), and local `QwenTtsProvider` (no cloud TTS)
+    - `services/local-audio`: Python service on `127.0.0.1` hosting Qwen3-TTS (VoiceDesign + Base) and MOSS-SoundEffect v2.0 from pinned local weights; reports model versions and weights hashes. Document setup for CUDA and Apple Silicon (MLX port) and record which one was used
+    - Voice catalogue: write period voice descriptions (gender, age band; never a real person), generate reference clips with VoiceDesign, choose takes by ear, commit clips + transcripts + hashes in `assets/voices/catalogue.json` in the `VoiceCatalogue` format from 4.2. Size it from the speaking characters 4.1 finds in *Dracula*, plus headroom
+    - `QwenTtsProvider` renders through Base voice cloning from the reference clip; validates the service's response and WAV output
+    - Spike: delivery hints with cloning (Base has no instruction control). Compare delivery ignored, per-delivery reference clips and VoiceDesign per line; choose the option that keeps voices recognisable across a chapter and record the result
   - [ ] 8.2 Atomic content-hash render cache: versioned exact-request cache keys, unique same-directory temp WAV, full PCM format/data-length/frame validation + flush + atomic rename, validate cache hits, coalesce identical requests, bounded concurrency (default 2); crash tests around rename/DB commit
-  - [ ] 8.3 Exponential-backoff retries (≤3), isolated per-segment failure handling, pre-render character/cost estimate, and zero secret logging
-  - _Requirements: 5.1–5.5, 8.2, 8.3_
+  - [ ] 8.3 Exponential-backoff retries (≤3), isolated per-segment failure handling, pre-render character count and render-time estimate, and zero secret logging
+  - _Requirements: 5.1–5.6, 8.2, 8.3_
 
 - [ ] 9. Scene-based ffmpeg mixing & loudness mastering
   - [ ] 9.1 Single `ffmpeg` wrapper in `packages/mix` (logs full filter graph on error); sample-based timeline with 250 ms only between adjacent speech turns; 600 ms scene transitions replace rather than stack with turn gaps; discrete cues occupy time
@@ -85,11 +94,12 @@
 
 - [ ] 11. Upload flow, rights/AI notices, and cast editor
   - Upload dropzone (≤20 MB `.epub` check, optional judge passkey prompt, rights notice, per-Book budget control), cast voice editor with targeted re-render, and visible AI-generated badge
-  - _Requirements: 2.5, 8.2, 9.1, 9.3_
+  - `GENERATION_ENABLED` switch (default off): when off, hide upload and cast editing and refuse every generation route server-side, with a test per route; the AI-generated badge stays visible either way
+  - _Requirements: 2.5, 8.2, 8.5, 9.1, 9.3_
 
 - [ ] 12. Pre-rendered demos, single-container deploy, E2E, and Kiroween submission
   - [ ] 12.1 Playwright E2E suite (`StubProvider`): power-on gesture, instant demo tuning, fixture EPUB upload, keyboard controls, and transcript alignment and opt-in accessibility assertions
-  - [ ] 12.2 Pre-render *The Tell-Tale Heart* (or *House of Usher* opening) + *Dracula* Ch. 1 with real cloud TTS as checksum-pinned, idempotently seeded demos (no paid boot calls); target sound within 5 seconds after a user gesture on a documented connection. Use an actual dialogue passage for multi-voice demonstrations
-  - [ ] 12.3 `Dockerfile` + persistent `/data` volume config (Fly.io / Railway / VPS) running one replica with `apps/web` + `apps/worker` + `ffmpeg`, supervised shutdown/restarts, readiness checks and backup; prove restart/redeploy persistence; verify `.kiro/` is tracked in git (NOT in `.gitignore`) and add MIT/Apache-2.0 `LICENSE`
+  - [ ] 12.2 Pre-render *The Tell-Tale Heart* (or *House of Usher* opening) + *Dracula* Ch. 1 locally with Qwen3-TTS as checksum-pinned, idempotently seeded demos (no generation on boot); target sound within 5 seconds after a user gesture on a documented connection. Use an actual dialogue passage for multi-voice demonstrations
+  - [ ] 12.3 `Dockerfile` + persistent `/data` volume config (Fly.io / Railway / VPS) running one replica with `apps/web` + `apps/worker` + `ffmpeg` in demo-only mode (generation disabled, no LLM key, no TTS model), supervised shutdown/restarts, readiness checks and backup; prove restart/redeploy persistence; verify `.kiro/` is tracked in git (NOT in `.gitignore`) and add MIT/Apache-2.0 `LICENSE`
   - [ ] 12.4 Create hooks for schema/fixture audits in installed Kiro; capture actual Specs, Steering, PBT, Hooks, MCP and supported Custom Agent runs. Prepare README, architecture diagram, demo video and optional blog/social drafts; recheck current official submission rules before publishing. Never claim planned tools were used
-  - _Requirements: 1.6, 8.1–8.4, 9.1–9.3_
+  - _Requirements: 1.6, 8.1–8.5, 9.1–9.3_

@@ -15,7 +15,7 @@ Two promises guide the design:
 - **Every character keeps one voice for the whole book.**
 - **The story is told faithfully.** Dialogue is quoted verbatim and nothing is invented. The pipeline is designed so that every script must pass an automated dialogue-fidelity check before any audio is generated.
 
-The planned live demo will ship pre-rendered public-domain Gothic fiction (*The Tell-Tale Heart*, *The Fall of the House of Usher*, *Dracula*), so listeners can tune in without triggering any paid generation.
+The planned live demo will ship pre-rendered public-domain Gothic fiction (*The Tell-Tale Heart*, *The Fall of the House of Usher*, *Dracula*), so listeners can tune in without triggering any generation. The live site will only play these pre-rendered episodes; generating new ones happens on a local machine.
 
 > **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue, the worker process, the spend ledger, the generation-route guard, EPUB ingestion (chapters, scene breaks, part splitting, text normaliser) and the bundled demo books. Not wired up yet: the worker has no job handlers, and no route or paid call uses the guard or ledger. Not built yet: casting, adaptation, validation, voice rendering, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
 
@@ -32,8 +32,8 @@ EPUB ─▶ Ingest ─▶ Cast ─▶ Adapt ─▶ Validate ─┬─▶ Render 
 | **Ingest** | Safely unpack the EPUB, strip front matter and footnotes, extract an inventory of source quotes, and split chapters over 8,000 words. |
 | **Cast** | Find the characters and assign each a distinct voice. Announcer and Narrator voices are reserved. |
 | **Adapt** | An LLM writes a scene-structured radio script as validated JSON. |
-| **Validate** | Check the schema, cast and sound IDs, then score dialogue fidelity (matched source quotes ÷ total). Scripts below 0.90 are retried, then failed, so they never reach paid TTS. |
-| **Render** | Synthesise speech into a content-addressed WAV cache with atomic writes, so unchanged lines are never paid for twice. |
+| **Validate** | Check the schema, cast and sound IDs, then score dialogue fidelity (matched source quotes ÷ total). Scripts below 0.90 are retried, then failed, so they never reach TTS. |
+| **Render** | Synthesise speech locally with Qwen3-TTS, cloning each voice from a reference clip designed with Qwen3-TTS VoiceDesign. Output goes into a content-addressed WAV cache with atomic writes, so unchanged lines are never rendered twice. |
 | **Mix** | Use ffmpeg to assemble scenes, duck ambience under speech, apply an optional AM-radio filter, and master to −16 LUFS. Output is MP3 with WebVTT captions. |
 
 Full details are in [`design.md`](.kiro/specs/midnight-radio/design.md).
@@ -49,8 +49,10 @@ packages/
   db/               SQLite migrations and the spend ledger (budget reservations)
   ingest/           Safe EPUB reading, chapter text, scene breaks and the 8,000-word splitter
   llm/              Casting and adaptation behind a provider-agnostic interface (planned)
-  tts/              TtsProvider interface, render cache and StubProvider (planned)
+  tts/              TtsProvider interface, render cache, QwenTtsProvider and StubProvider (planned)
   mix/              ffmpeg wrapper, ducking and loudness (planned)
+services/
+  local-audio/      Local Python host for Qwen3-TTS and MOSS-SoundEffect v2.0, used only on the generation machine (planned)
 mcp/
   sfx-library/      MCP server for curating CC0 sound assets in Kiro (planned)
 fixtures/
@@ -62,7 +64,7 @@ fixtures/
 
 ## Getting started
 
-**Requirements:** Node 24, pnpm 10.18 (via Corepack) and Git. ffmpeg is needed once the mixing stage lands.
+**Requirements:** Node 24, pnpm 10.18 (via Corepack) and Git. ffmpeg is needed once the mixing stage lands. Generating episodes (not needed for development or tests) will also need Python and a machine that can run the local audio models: an NVIDIA GPU or Apple Silicon.
 
 ```sh
 corepack enable
@@ -93,12 +95,13 @@ Copy `.env.example` to `.env`. Secrets are read only from environment variables 
 | `WORKER_SHUTDOWN_TIMEOUT_MS` | How long the worker waits on SIGTERM to release its current job before exiting (default 4,000, below Fly.io's 5 s and Docker's 10 s kill timeouts). |
 | `LLM_API_KEY`, `LLM_MODEL` | Credentials and model for casting and adaptation. Any OpenAI-compatible Chat Completions endpoint with JSON-schema output works. Without a key, no paid LLM call is possible. |
 | `LLM_BASE_URL`, `LLM_TIMEOUT_MS` | Endpoint (default `https://api.openai.com/v1`) and per-request timeout (default 90,000 ms). |
-| `GLOBAL_DAILY_TTS_CHAR_LIMIT` | TTS characters allowed per UTC day. Missing or `0` disables paid TTS. |
+| `GLOBAL_DAILY_TTS_CHAR_LIMIT` | TTS characters allowed per UTC day. TTS runs locally, so this limits render time rather than spend. Missing or `0` disables TTS. |
 | `GLOBAL_DAILY_LLM_TOKEN_LIMIT` | LLM tokens (input plus capped output) allowed per UTC day. Missing or `0` disables paid LLM calls. |
 | `BOOK_TTS_CHAR_LIMIT` | Operator ceiling on any one book's TTS budget (default 60,000). A user-chosen budget can't exceed it. |
+| `GENERATION_ENABLED` | Planned. Off by default and always off on the live site: upload, cast editing and every generation route are disabled, and only pre-rendered demos play. Turn it on only on a local machine running the audio models. |
 | `UPLOAD_PASSKEY` | Optional judge passkey for all custom generation, sent in the `x-midnight-passkey` header. Demo playback stays public. |
 
-The spend ledger (`packages/db/src/budget.ts`) is built for every paid call to use, but no paid calls exist yet. It works like this:
+The spend ledger (`packages/db/src/budget.ts`) is built for every LLM call and TTS render to use, but nothing calls it yet. It works like this:
 
 - **Reserving:** before the provider is contacted, the call reserves its expected cost in SQLite. Calls that would exceed a cap are rejected, and the job is parked as `over_budget`.
 - **Settling:** usage the provider doesn't report is recorded as the full reserved amount. Usage above the reservation is recorded and counts toward the cap, so later calls are refused.
@@ -131,7 +134,8 @@ Agent hooks, the `sfx-library` MCP server and a `script-auditor` custom agent ar
 - Demo content is public-domain fiction only.
 - Midnight Radio does not circumvent DRM and does not clone real people's voices.
 - Generated episodes are AI-produced and will be labelled as such in the player.
-- Sound effects and music will be CC0 or project-created, with each asset's source and licence listed in `ATTRIBUTION.md`.
+- Character voices are designed from written descriptions with Qwen3-TTS VoiceDesign, never copied from a real person.
+- Sound effects and music will be CC0 or project-created (some foley generated locally with MOSS-SoundEffect v2.0), with each asset's source and licence listed in `ATTRIBUTION.md`.
 
 ## License
 

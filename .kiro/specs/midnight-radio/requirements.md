@@ -24,7 +24,7 @@ Target category: **Resurrection** (Kiroween 2026). Demo content: public-domain G
 
 #### Acceptance Criteria
 
-1. WHEN a user uploads a file with a `.epub` extension of at most 20 MB THE SYSTEM SHALL parse it and list its chapters with title and approximate word count.
+1. WHERE generation is enabled (local runs; see 8.5), WHEN a user uploads a file with a `.epub` extension of at most 20 MB THE SYSTEM SHALL parse it and list its chapters with title and approximate word count.
 2. IF the EPUB is DRM-protected, malformed, or contains no readable text THEN THE SYSTEM SHALL reject it with a specific, human-readable reason and create no Book.
 3. THE SYSTEM SHALL strip front matter, tables of contents, footnote markers, and images before adaptation, while preserving inline character adjacency across inline XHTML tags (`<em>`, `<span>`, drop-caps) and introducing separators at block boundaries and explicit `<br>`/`<hr>` breaks without deleting existing text-node whitespace.
 4. THE SYSTEM SHALL preserve extracted source text and paragraph boundaries, extract quote spans before folding directional quotation marks, and apply the same versioned typography/whitespace normaliser to source and Script for comparison; case, words, and punctuation SHALL NOT be deleted to improve fidelity.
@@ -60,7 +60,7 @@ Target category: **Resurrection** (Kiroween 2026). Demo content: public-domain G
 
 ### Requirement 4 — Script validation (quality gate)
 
-**User Story:** As the builder, I want every Script checked before audio is generated, so that broken scripts never cost TTS credits.
+**User Story:** As the builder, I want every Script checked before audio is generated, so that broken scripts never waste TTS render time.
 
 #### Acceptance Criteria
 
@@ -78,8 +78,9 @@ Target category: **Resurrection** (Kiroween 2026). Demo content: public-domain G
 1. THE SYSTEM SHALL synthesise each speech Segment with the voice assigned in the Cast through a pluggable TTS provider interface.
 2. THE SYSTEM SHALL key the Render cache on the versioned synthesis request `(provider/model version, voice ID, exact submitted text, delivery hint, synthesis settings, output format)`, reuse only validated cached audio, and publish via a unique same-directory temporary file plus full PCM WAV length/format/non-zero frame validation and atomic rename. Concurrent identical requests SHALL be coalesced; incomplete files SHALL never count as cache hits.
 3. IF a TTS call fails THEN THE SYSTEM SHALL retry up to 3 times with exponential backoff and then mark only that Segment failed, without discarding completed Segments.
-4. THE SYSTEM SHALL support at least one cloud TTS provider and one offline `StubProvider` (deterministic tone/silence of proportional length) for tests and CI.
-5. THE SYSTEM SHALL report estimated character count and cost for a chapter before rendering starts.
+4. THE SYSTEM SHALL synthesise speech with a locally run Qwen3-TTS model and SHALL NOT call a cloud TTS service. It SHALL also provide an offline `StubProvider` (deterministic tone/silence of proportional length) for tests and CI.
+5. THE SYSTEM SHALL build its pinned voice catalogue offline with Qwen3-TTS VoiceDesign from written voice descriptions (no cloning of real people), storing for each voice its description, gender presentation, age band, reference clip, clip transcript and content hash.
+6. THE SYSTEM SHALL report a chapter's character count and estimated render time before rendering starts.
 
 ### Requirement 6 — Mixing and the "radio sound"
 
@@ -112,14 +113,15 @@ Target category: **Resurrection** (Kiroween 2026). Demo content: public-domain G
 #### Acceptance Criteria
 
 1. THE SYSTEM SHALL process adaptation and rendering as resumable jobs whose state survives a server restart on persistent storage.
-2. THE SYSTEM SHALL enforce an operator-controlled per-Book TTS character budget and global daily TTS-character and LLM-token caps using atomic reservations before every paid call, including casting, adaptation, retries, and re-renders. All generation-triggering endpoints SHALL be rate-limited; an optional judge passkey SHALL protect custom generation, not just uploads, while demo playback stays public. A user-selected budget SHALL NOT raise operator caps.
+2. THE SYSTEM SHALL enforce an operator-controlled per-Book TTS character budget and global daily TTS-character and LLM-token caps using atomic reservations before every LLM call and TTS render, including casting, adaptation, retries, and re-renders. All generation-triggering endpoints SHALL be rate-limited; an optional judge passkey SHALL protect custom generation, not just uploads, while demo playback stays public. A user-selected budget SHALL NOT raise operator caps.
 3. THE SYSTEM SHALL NOT log or persist API keys, and SHALL read them only from environment variables.
 4. THE SYSTEM SHALL record per-chapter LLM tokens, TTS characters, and wall time.
+5. WHERE generation is disabled (the default, and always on the live deployment) THE SYSTEM SHALL serve only the pre-rendered demo Episodes, hide upload and cast editing, and refuse every generation-triggering request. Generation SHALL run only when explicitly enabled on a machine running the local audio models.
 
 ### Requirement 9 — Content and rights
 
 #### Acceptance Criteria
 
 1. THE SYSTEM SHALL display a notice that users must have the right to adapt uploaded content.
-2. THE SYSTEM SHALL use only sound effects and music licensed CC0 or created for the project, and SHALL list each asset's source and licence in `ATTRIBUTION.md`.
+2. THE SYSTEM SHALL use only sound effects and music licensed CC0 or created for the project (including foley generated offline with a locally run MOSS-SoundEffect v2.0), and SHALL list each asset's source and licence in `ATTRIBUTION.md`.
 3. THE SYSTEM SHALL label every Episode as AI-generated in its ID3 metadata and the player UI.
