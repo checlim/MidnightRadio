@@ -178,6 +178,22 @@ ALTER TABLE usage ADD COLUMN reservation_id TEXT REFERENCES budget_reservations(
 CREATE UNIQUE INDEX usage_reservation ON usage(reservation_id);
 `,
   },
+  {
+    version: 3,
+    name: "cast: pinned voice catalogue and member details",
+    sql: /* sql */ `
+-- A Book's Cast is frozen once its catalogue pin is set; later changes are explicit edits.
+ALTER TABLE books ADD COLUMN voice_catalogue_id TEXT;
+ALTER TABLE books ADD COLUMN voice_catalogue_hash TEXT;
+-- role: 'character' | 'announcer' | 'narrator' (checked in code). The reserved roles are rows too,
+-- so the (book_id, voice_id) unique index also keeps their voices away from characters.
+ALTER TABLE cast_members ADD COLUMN mention_count INTEGER NOT NULL DEFAULT 0 CHECK (mention_count >= 0);
+ALTER TABLE cast_members ADD COLUMN speaks INTEGER NOT NULL DEFAULT 0 CHECK (speaks IN (0, 1));
+ALTER TABLE cast_members ADD COLUMN voice_fit TEXT CHECK (voice_fit IS NULL OR voice_fit IN ('good', 'fair', 'poor'));
+-- At most one Announcer and one Narrator per Book.
+CREATE UNIQUE INDEX cast_members_reserved_role ON cast_members(book_id, role) WHERE role IN ('announcer', 'narrator');
+`,
+  },
 ];
 
 /**
