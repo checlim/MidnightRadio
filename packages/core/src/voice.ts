@@ -146,7 +146,7 @@ export interface VoiceAssignment {
   characters: CharacterVoice[];
 }
 
-export type CastingPauseReason = "voices_exhausted" | "reserved_name" | "duplicate_character";
+export type CastingPauseReason = "voices_exhausted" | "reserved_name" | "duplicate_character" | "catalogue_changed";
 
 /** Casting cannot continue without a person's decision. The message is safe to show users. */
 export class CastingPausedError extends Error {
@@ -161,6 +161,8 @@ export class CastingPausedError extends Error {
 }
 
 const RESERVED_NAMES = new Set(["announcer", "narrator"]);
+/** True for names reserved for the radio Announcer and Narrator (compared by `nameKey`). */
+export const isReservedName = (name: string): boolean => RESERVED_NAMES.has(nameKey(name));
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** Casting priority: most mentioned first, then by name, then id: a total order, so input order never matters. */
@@ -207,6 +209,30 @@ const tieBreak = (c: VoiceCatalogue, characterId: string, voice: Voice) =>
   createHash("sha256").update([c.seed, c.id, c.version, characterId, voice.id].join("\u0000")).digest("hex");
 
 /**
+ * Give each speaker (already in priority order) the best-suited voice still free in `pool`; ties go
+ * to the voice with the smallest seeded hash. The caller checks that the pool is large enough.
+ * Shared by first casting and later additions, so both follow exactly the same rules.
+ */
+export function allocateVoices(speakers: AssignableCharacter[], pool: Voice[], catalogue: VoiceCatalogue): Map<string, CharacterVoice> {
+  if (speakers.length > pool.length) throw new Error("allocateVoices: more speakers than voices");
+  const free = new Set(pool.map((v) => v.id));
+  const chosen = new Map<string, CharacterVoice>();
+  for (const c of speakers) {
+    let best: { voice: Voice; rating: Rating; hash: string } | undefined;
+    for (const voice of pool) {
+      if (!free.has(voice.id)) continue;
+      const rating = rateVoice(c, voice);
+      const hash = tieBreak(catalogue, c.id, voice);
+      if (!best || rating.score > best.rating.score || (rating.score === best.rating.score && (hash < best.hash || (hash === best.hash && voice.id < best.voice.id)))) {
+        best = { voice, rating, hash };
+      }
+    }
+    free.delete(best!.voice.id);
+    chosen.set(c.id, { characterId: c.id, voiceId: best!.voice.id, fit: best!.rating.fit });
+  }
+  return chosen;
+}
+/**
  * Assign each speaking character a distinct, non-reserved voice from the pinned catalogue.
  * Characters are served in priority order (most mentioned first), each taking the best-suited
  * voice still free; ties go to the voice with the smallest seeded hash. Characters who never
@@ -245,21 +271,7 @@ export function assignVoices(characters: AssignableCharacter[], catalogueInput: 
     );
   }
 
-  const free = new Set(pool.map((v) => v.id));
-  const chosen = new Map<string, CharacterVoice>();
-  for (const c of speakers) {
-    let best: { voice: Voice; rating: Rating; hash: string } | undefined;
-    for (const voice of pool) {
-      if (!free.has(voice.id)) continue;
-      const rating = rateVoice(c, voice);
-      const hash = tieBreak(catalogue, c.id, voice);
-      if (!best || rating.score > best.rating.score || (rating.score === best.rating.score && (hash < best.hash || (hash === best.hash && voice.id < best.voice.id)))) {
-        best = { voice, rating, hash };
-      }
-    }
-    free.delete(best!.voice.id);
-    chosen.set(c.id, { characterId: c.id, voiceId: best!.voice.id, fit: best!.rating.fit });
-  }
+  const chosen = allocateVoices(speakers, pool, catalogue);
 
   return {
     catalogueId: catalogue.id,

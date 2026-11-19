@@ -194,6 +194,16 @@ ALTER TABLE cast_members ADD COLUMN voice_fit TEXT CHECK (voice_fit IS NULL OR v
 CREATE UNIQUE INDEX cast_members_reserved_role ON cast_members(book_id, role) WHERE role IN ('announcer', 'narrator');
 `,
   },
+  {
+    version: 4,
+    name: "stale episodes after cast edits",
+    sql: /* sql */ `
+-- stale: some of the episode's speech was invalidated (a Cast voice edit), so its audio, VTT and
+-- chapter markers are out of date until the episode is re-mixed from the new durations.
+ALTER TABLE episodes ADD COLUMN stale INTEGER NOT NULL DEFAULT 0 CHECK (stale IN (0, 1));
+CREATE INDEX segments_speaker ON segments(speaker) WHERE speaker IS NOT NULL;
+`,
+  },
 ];
 
 /**
