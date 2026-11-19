@@ -91,6 +91,8 @@ Copy `.env.example` to `.env`. Secrets are read only from environment variables 
 |---|---|
 | `DATA_DIR` | Persistent directory for the SQLite database (default `/data`). |
 | `WORKER_SHUTDOWN_TIMEOUT_MS` | How long the worker waits on SIGTERM to release its current job before exiting (default 4,000, below Fly.io's 5 s and Docker's 10 s kill timeouts). |
+| `LLM_API_KEY`, `LLM_MODEL` | Credentials and model for casting and adaptation. Any OpenAI-compatible Chat Completions endpoint with JSON-schema output works. Without a key, no paid LLM call is possible. |
+| `LLM_BASE_URL`, `LLM_TIMEOUT_MS` | Endpoint (default `https://api.openai.com/v1`) and per-request timeout (default 90,000 ms). |
 | `GLOBAL_DAILY_TTS_CHAR_LIMIT` | TTS characters allowed per UTC day. Missing or `0` disables paid TTS. |
 | `GLOBAL_DAILY_LLM_TOKEN_LIMIT` | LLM tokens (input plus capped output) allowed per UTC day. Missing or `0` disables paid LLM calls. |
 | `BOOK_TTS_CHAR_LIMIT` | Operator ceiling on any one book's TTS budget (default 60,000). A user-chosen budget can't exceed it. |

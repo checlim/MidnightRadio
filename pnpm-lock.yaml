@@ -81,7 +81,17 @@ importers:
         specifier: ^3.3.1
         version: 3.3.1
 
-  packages/llm: {}
+  packages/llm:
+    dependencies:
+      '@midnight-radio/core':
+        specifier: workspace:*
+        version: link:../core
+      '@midnight-radio/db':
+        specifier: workspace:*
+        version: link:../db
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/mix: {}
 

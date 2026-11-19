@@ -1,0 +1,104 @@
+import { z } from "zod";
+import { LlmError, type LlmProvider, type LlmRequest, type LlmResponse } from "./provider.js";
+
+export interface OpenAiCompatibleConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  timeoutMs: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 90_000;
+
+const LlmEnvSchema = z.object({
+  LLM_BASE_URL: z
+    .string()
+    .optional()
+    .transform((s) => s?.trim() || "https://api.openai.com/v1")
+    .pipe(z.url({ protocol: /^https?$/ })),
+  LLM_API_KEY: z.string().optional().transform((s) => s?.trim() || undefined),
+  LLM_MODEL: z.string().optional().transform((s) => s?.trim() || undefined),
+  LLM_TIMEOUT_MS: z
+    .string()
+    .optional()
+    .transform((s) => s?.trim() ?? "")
+    .pipe(z.union([z.literal("").transform(() => DEFAULT_TIMEOUT_MS), z.string().regex(/^\d+$/).transform(Number).refine((n) => n >= 1_000 && n <= 600_000)])),
+});
+
+/**
+ * Read LLM settings from the environment. Returns undefined when no API key is set (paid LLM
+ * calls are then unavailable). Errors name the variable but never echo values.
+ */
+export function loadLlmConfig(env: Record<string, string | undefined> = process.env): OpenAiCompatibleConfig | undefined {
+  const parsed = LlmEnvSchema.safeParse(env);
+  if (!parsed.success) {
+    throw new Error(`invalid LLM configuration: ${[...new Set(parsed.error.issues.map((i) => String(i.path[0])))].join(", ")} is malformed`);
+  }
+  const { LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_TIMEOUT_MS } = parsed.data;
+  if (!LLM_API_KEY) return undefined;
+  if (!LLM_MODEL) throw new Error("invalid LLM configuration: LLM_MODEL is required when LLM_API_KEY is set");
+  return { baseUrl: LLM_BASE_URL.replace(/\/+$/, ""), apiKey: LLM_API_KEY, model: LLM_MODEL, timeoutMs: LLM_TIMEOUT_MS };
+}
+
+const ResponseSchema = z.object({
+  id: z.string().optional(),
+  choices: z.array(z.object({ message: z.object({ content: z.string().nullable().optional(), refusal: z.string().nullable().optional() }), finish_reason: z.string().nullable().optional() })).min(1),
+  usage: z.object({ prompt_tokens: z.number().int().nonnegative(), completion_tokens: z.number().int().nonnegative() }).optional(),
+});
+
+/** Status codes for requests the provider rejected before doing (billable) work. */
+const NOT_BILLED = new Set([400, 401, 403, 404, 409, 413, 415, 422, 429]);
+const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504]);
+
+/**
+ * Chat Completions client for any OpenAI-compatible endpoint, with JSON-schema structured output.
+ * Never logs; error messages never include the API key, headers or the request body.
+ */
+export function createOpenAiCompatibleProvider(config: OpenAiCompatibleConfig, fetchImpl: typeof fetch = fetch): LlmProvider {
+  return {
+    id: `openai-compatible:${config.model}`,
+    async complete(req: LlmRequest): Promise<LlmResponse> {
+      const signal = req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(config.timeoutMs)]) : AbortSignal.timeout(config.timeoutMs);
+      let res: Response;
+      try {
+        res = await fetchImpl(`${config.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` },
+          body: JSON.stringify({
+            model: config.model,
+            messages: [
+              { role: "system", content: req.system },
+              { role: "user", content: req.user },
+            ],
+            response_format: { type: "json_schema", json_schema: { name: req.jsonSchema.name, strict: true, schema: req.jsonSchema.schema } },
+            max_tokens: req.maxOutputTokens,
+            temperature: 0,
+          }),
+          signal,
+        });
+      } catch (err) {
+        // Timeout or network failure: the provider may already have done the work.
+        const timedOut = (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError";
+        throw new LlmError(timedOut ? "LLM request timed out or was aborted" : "LLM request failed to reach the provider", true, !req.signal?.aborted);
+      }
+
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined);
+        throw new LlmError(`LLM provider returned HTTP ${res.status}`, !NOT_BILLED.has(res.status), RETRYABLE.has(res.status), res.status);
+      }
+      let parsed: z.infer<typeof ResponseSchema>;
+      try {
+        parsed = ResponseSchema.parse(await res.json());
+      } catch {
+        throw new LlmError("LLM provider returned an unreadable response", true, true, res.status);
+      }
+      const choice = parsed.choices[0]!;
+      if (choice.message.refusal) throw new LlmError("LLM refused the request", true, false, res.status);
+      return {
+        text: choice.message.content ?? "",
+        usage: parsed.usage ? { inputTokens: parsed.usage.prompt_tokens, outputTokens: parsed.usage.completion_tokens } : undefined,
+        requestId: res.headers.get("x-request-id") ?? parsed.id,
+      };
+    },
+  };
+}

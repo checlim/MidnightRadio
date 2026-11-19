@@ -34,7 +34,9 @@
   - _Requirements: 1.1–1.6_
 
 - [ ] 4. Deterministic casting
-  - [ ] 4.1 Map-reduce character extraction over `canonical_text` (names, aliases, gender presentation, age band, description)
+  - [x] 4.1 Map-reduce character extraction over `canonical_text` (names, aliases, gender presentation, age band, description)
+    - Done: `LlmProvider` interface with an OpenAI-compatible client (JSON-schema output, `billed` flag on errors, key never in messages) and an offline `StubLlmProvider`, in `packages/llm`. Map: `chunkBook` (whole paragraphs, never across chapters, chunk size grows to cap calls at 80) and `extractCharacters` (one reserved, Zod-validated call per chunk; excerpt passed as delimited untrusted data; retries invalid replies with the problem described and transient errors with back-off). Reduce, in `packages/core/src/cast.ts`: `mergeCharacterEvidence` (order-independent; never merges characters listed side by side; contested aliases dropped), descriptions from each character's earliest appearance, and `countMentions` counted in the source text rather than taken from the model. On *Dracula*: 66 chunks, worst-case reservation ~442k tokens
+    - Remaining: nothing calls `extractCharacters` yet. The `cast` job handler and persistence to `cast_members` need ingested chapters stored (upload flow, task 11) and the voice assignment of 4.2. A real-model run needs `LLM_API_KEY`
   - [ ] 4.2 Order-invariant voice assignment from the same frozen inventory and pinned voice catalogue; reserved `Announcer`/`Narrator` voices, stable tie-breaks, pause on voice exhaustion
   - [ ] 4.3 Add-new-character flow preserving existing voices; enforce unique/non-reserved voices on edits; targeted speech invalidation followed by episode re-mix and VTT/marker regeneration
   - [ ] 4.4 Property-based test (`fast-check`): voice assignment invariance under permutations of the same frozen inventory (not repeat LLM extractions) and reserved-voice exclusion
