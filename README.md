@@ -17,7 +17,7 @@ Two promises guide the design:
 
 The planned live demo will ship pre-rendered public-domain Gothic fiction (*The Tell-Tale Heart*, *The Fall of the House of Usher*, *Dracula*), so listeners can tune in without triggering any generation. The live site will only play these pre-rendered episodes; generating new ones happens on a local machine.
 
-> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue, the worker process, the spend ledger, the generation-route guard, EPUB ingestion (chapters, scene breaks, part splitting, text normaliser), the bundled demo books, casting (character extraction and voice assignment) and the TTS provider interface with WAV validation, the atomic render cache, and per-line rendering with retries and a pre-render plan. Not wired up yet: the worker has no job handlers, and no route or paid call uses the guard or ledger. Not built yet: the local audio service and real voice rendering, adaptation, validation, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
+> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue, the worker process, the spend ledger, the generation-route guard, EPUB ingestion (chapters, scene breaks, part splitting, text normaliser), the bundled demo books, casting (character extraction and voice assignment) and the TTS provider interface with WAV validation, the atomic render cache, per-line rendering with retries and a pre-render plan, and the local audio service (server and client, tested against a fake backend). Not wired up yet: the worker has no job handlers, and no route or paid call uses the guard or ledger. Not built yet: the real Qwen3-TTS and MOSS backends and the voice catalogue, adaptation, validation, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
 
 ## How it works
 
@@ -49,10 +49,10 @@ packages/
   db/               SQLite migrations and the spend ledger (budget reservations)
   ingest/           Safe EPUB reading, chapter text, scene breaks and the 8,000-word splitter
   llm/              Casting and adaptation behind a provider-agnostic interface (planned)
-  tts/              TtsProvider interface, strict WAV validation, an offline StubProvider, the atomic render cache and per-line retries; QwenTtsProvider planned
+  tts/              TtsProvider interface, strict WAV validation, an offline StubProvider, the atomic render cache, per-line retries and the QwenTtsProvider client for the local audio service
   mix/              ffmpeg wrapper, ducking and loudness (planned)
 services/
-  local-audio/      Local Python host for Qwen3-TTS and MOSS-SoundEffect v2.0, used only on the generation machine (planned)
+  local-audio/      Local Python host for Qwen3-TTS and MOSS-SoundEffect v2.0, used only on the generation machine; the server and a fake backend are built, the real model backends are planned
 mcp/
   sfx-library/      MCP server for curating CC0 sound assets in Kiro (planned)
 fixtures/
@@ -95,6 +95,8 @@ Copy `.env.example` to `.env`. Secrets are read only from environment variables 
 | `WORKER_SHUTDOWN_TIMEOUT_MS` | How long the worker waits on SIGTERM to release its current job before exiting (default 4,000, below Fly.io's 5 s and Docker's 10 s kill timeouts). |
 | `LLM_API_KEY`, `LLM_MODEL` | Credentials and model for casting and adaptation. Any OpenAI-compatible Chat Completions endpoint with JSON-schema output works. Without a key, no paid LLM call is possible. |
 | `LLM_BASE_URL`, `LLM_TIMEOUT_MS` | Endpoint (default `https://api.openai.com/v1`) and per-request timeout (default 90,000 ms). |
+| `LOCAL_AUDIO_URL`, `LOCAL_AUDIO_TOKEN` | Where the local audio service listens (loopback addresses only; default `http://127.0.0.1:8765`) and its optional access token. |
+| `LOCAL_AUDIO_TIMEOUT_MS`, `LOCAL_AUDIO_MS_PER_CHAR`, `TTS_SEED` | Per-render timeout (default 10 minutes), the assumed render time per character for the pre-render estimate (default 70 ms, to be replaced by a measured value), and the seed sent with every render. |
 | `GLOBAL_DAILY_TTS_CHAR_LIMIT` | TTS characters allowed per UTC day. TTS runs locally, so this limits render time rather than spend. Missing or `0` disables TTS. |
 | `GLOBAL_DAILY_LLM_TOKEN_LIMIT` | LLM tokens (input plus capped output) allowed per UTC day. Missing or `0` disables paid LLM calls. |
 | `BOOK_TTS_CHAR_LIMIT` | Operator ceiling on any one book's TTS budget (default 60,000). A user-chosen budget can't exceed it. |

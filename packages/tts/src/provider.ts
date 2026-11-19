@@ -59,7 +59,8 @@ export interface TtsProvider {
 
 export type TtsErrorKind =
   | "rejected" // the request itself is invalid (unknown voice, bad text): retrying cannot help
-  | "unavailable" // the local audio service is not reachable
+  | "unavailable" // the local audio service is not reachable, busy, or does not match the catalogue
+  | "service_error" // the local audio service answered with a failure
   | "timeout"
   | "invalid_output" // the service answered, but the audio failed validation
   | "aborted";

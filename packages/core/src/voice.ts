@@ -19,10 +19,27 @@ export type VoiceGender = (typeof VOICE_GENDERS)[number];
 const text = z.string().trim().min(1).max(100);
 const voiceId = text.regex(/^[\w.:-]+$/, "voice ids may only contain letters, digits and . : _ -");
 
+/** Reference clip a cloning model copies the voice from, committed under the catalogue directory. */
+export const VoiceClipSchema = z.strictObject({
+  /** Relative path of the WAV inside the catalogue directory. */
+  file: z
+    .string()
+    .min(1)
+    .max(200)
+    .regex(/^[\w][\w./-]*\.wav$/, "clip files must be relative .wav paths")
+    .refine((f) => !f.split("/").some((s) => s === ".." || s === "." || s === ""), "clip paths must not contain empty, . or .. segments"),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/, "sha256 must be 64 lowercase hex characters"),
+  /** What the clip says, word for word. Cloning needs it alongside the audio. */
+  transcript: z.string().trim().min(1).max(500),
+});
+
 export const VoiceSchema = z.strictObject({
   id: voiceId,
   name: text,
   gender: z.enum(VOICE_GENDERS),
+  /** The written description the voice was designed from (never a real person). */
+  description: z.string().trim().min(1).max(300).optional(),
+  clip: VoiceClipSchema.optional(),
   /** Ages the voice can plausibly play. Empty means no stated range. */
   ageBands: z
     .array(z.enum(VOICE_AGE_BANDS))
@@ -40,6 +57,18 @@ export const VoiceCatalogueSchema = z
     /** Fixed seed for the stable tie-break between equally good voices. */
     seed: text,
     reserved: z.strictObject({ announcer: voiceId, narrator: voiceId }),
+    /** The models behind the voices, pinned by revision and weights hash (Req 5.5). One entry per role. */
+    models: z
+      .array(
+        z.strictObject({
+          role: z.enum(["voice-design", "voice-clone", "sound-effect"]),
+          name: text,
+          revision: text,
+          weightsSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+        }),
+      )
+      .max(3)
+      .optional(),
     voices: z.array(VoiceSchema).min(3).max(500),
   })
   .superRefine((c, ctx) => {
@@ -51,11 +80,14 @@ export const VoiceCatalogueSchema = z
     for (const role of ["announcer", "narrator"] as const) {
       if (!ids.has(c.reserved[role])) ctx.addIssue({ code: "custom", path: ["reserved", role], message: `reserved ${role} voice "${c.reserved[role]}" is not in the catalogue` });
     }
+    const roles = c.models?.map((m) => m.role) ?? [];
+    if (new Set(roles).size !== roles.length) ctx.addIssue({ code: "custom", path: ["models"], message: "each model role may appear once" });
     if (c.reserved.announcer === c.reserved.narrator) {
       ctx.addIssue({ code: "custom", path: ["reserved", "narrator"], message: "the Announcer and Narrator must have different voices" });
     }
   });
 
+export type VoiceClip = z.infer<typeof VoiceClipSchema>;
 export type Voice = z.infer<typeof VoiceSchema>;
 export type VoiceCatalogue = z.infer<typeof VoiceCatalogueSchema>;
 
@@ -69,9 +101,18 @@ export function catalogueHash(input: VoiceCatalogue): string {
     version: c.version,
     seed: c.seed,
     reserved: { announcer: c.reserved.announcer, narrator: c.reserved.narrator },
+    // Optional parts are included only when present, so a catalogue without them hashes as before.
+    ...(c.models ? { models: [...c.models].sort((a, b) => compare(a.role, b.role)).map((m) => ({ role: m.role, name: m.name, revision: m.revision, ...(m.weightsSha256 ? { weightsSha256: m.weightsSha256 } : {}) })) } : {}),
     voices: [...c.voices]
       .sort((a, b) => compare(a.id, b.id))
-      .map((v) => ({ id: v.id, name: v.name, gender: v.gender, ageBands: [...v.ageBands].sort() })),
+      .map((v) => ({
+        id: v.id,
+        name: v.name,
+        gender: v.gender,
+        ageBands: [...v.ageBands].sort(),
+        ...(v.description ? { description: v.description } : {}),
+        ...(v.clip ? { clip: { file: v.clip.file, sha256: v.clip.sha256, transcript: v.clip.transcript } } : {}),
+      })),
   };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
@@ -322,3 +363,19 @@ export const STUB_VOICE_CATALOGUE: VoiceCatalogue = {
     { id: "stub-n2", name: "Juno", gender: "neutral", ageBands: ["young-adult", "adult", "older"] },
   ],
 };
+
+/** A catalogue in which every voice has a reference clip: what a cloning provider needs (Req 5.5). */
+export type ClonableCatalogue = Omit<VoiceCatalogue, "voices"> & { voices: (Voice & { clip: VoiceClip })[] };
+
+/** Check that every voice has a reference clip and a description. Throws listing the voices that do not. */
+export function requireClonable(input: VoiceCatalogue): ClonableCatalogue {
+  const c = VoiceCatalogueSchema.parse(input);
+  const missing = c.voices.filter((v) => !v.clip || !v.description).map((v) => v.id);
+  if (missing.length > 0) {
+    throw new Error(`voices without a reference clip and description: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? `, and ${missing.length - 5} more` : ""}`);
+  }
+  return c as ClonableCatalogue;
+}
+
+/** Hash of a clip's transcript, as the local audio service reports it. */
+export const transcriptHash = (transcript: string): string => createHash("sha256").update(transcript, "utf8").digest("hex");

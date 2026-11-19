@@ -10,3 +10,9 @@ data/
 *.db-shm
 *.wav.tmp
 .DS_Store
+
+# Python (services/local-audio)
+__pycache__/
+*.pyc
+.venv/
+.python-version

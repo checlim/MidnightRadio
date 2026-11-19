@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import {
   CastingPausedError,
   STUB_VOICE_CATALOGUE,
@@ -8,6 +9,8 @@ import {
   buildCast,
   catalogueHash,
   rateVoice,
+  requireClonable,
+  transcriptHash,
   type AssignableCharacter,
   type VoiceCatalogue,
 } from "./voice.js";
@@ -204,5 +207,78 @@ describe("pausing instead of sharing voices", () => {
   it("refuses duplicate character ids and invalid catalogues", () => {
     expect(() => assignVoices([chr("x", "A"), chr("x", "B")], STUB_VOICE_CATALOGUE)).toThrow(expect.objectContaining({ reason: "duplicate_character" }));
     expect(() => assignVoices([chr("x", "A")], { ...STUB_VOICE_CATALOGUE, reserved: { announcer: "nope", narrator: "stub-narrator" } })).toThrow(/not in the catalogue/);
+  });
+});
+
+describe("reference clips and pinned models (Req 5.5)", () => {
+  const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+  const clip = (id: string) => ({ file: `clips/${id}.wav`, sha256: sha(id), transcript: "The night air is chill, and the hour is late." });
+  const withClips = (patch: Partial<VoiceCatalogue> = {}): VoiceCatalogue => ({
+    ...STUB_VOICE_CATALOGUE,
+    ...patch,
+    voices: STUB_VOICE_CATALOGUE.voices.map((v) => ({ ...v, description: `A designed voice for ${v.name}.`, clip: clip(v.id) })),
+  });
+
+  it("accepts a catalogue where every voice has a description and clip, and pinned models", () => {
+    const models = [
+      { role: "voice-design" as const, name: "Qwen3-TTS-12Hz-1.7B-VoiceDesign", revision: "abc123", weightsSha256: sha("design") },
+      { role: "voice-clone" as const, name: "Qwen3-TTS-12Hz-1.7B-Base", revision: "fd4b254", weightsSha256: sha("base") },
+    ];
+    const c = withClips({ models });
+    expect(VoiceCatalogueSchema.safeParse(c).success).toBe(true);
+    expect(requireClonable(c).voices.every((v) => v.clip.file.endsWith(".wav"))).toBe(true);
+  });
+
+  it.each([
+    ["a clip path that climbs out of the directory", { ...clip("x"), file: "../secrets/x.wav" }],
+    ["an absolute clip path", { ...clip("x"), file: "/etc/x.wav" }],
+    ["a clip that is not a .wav", { ...clip("x"), file: "clips/x.mp3" }],
+    ["a clip path with a dot segment", { ...clip("x"), file: "clips/./x.wav" }],
+    ["a clip with an empty segment", { ...clip("x"), file: "clips//x.wav" }],
+    ["a malformed hash", { ...clip("x"), sha256: "ABC" }],
+    ["a blank transcript", { ...clip("x"), transcript: "  " }],
+    ["an unknown clip field", { ...clip("x"), duration: 5 }],
+  ])("rejects %s", (_label, badClip) => {
+    const c = withClips();
+    c.voices = [{ ...c.voices[0]!, clip: badClip as never }, ...c.voices.slice(1)];
+    expect(VoiceCatalogueSchema.safeParse(c).success).toBe(false);
+  });
+
+  it("rejects two entries for the same model role", () => {
+    const c = withClips({ models: [{ role: "voice-clone", name: "A", revision: "1" }, { role: "voice-clone", name: "B", revision: "2" }] });
+    expect(VoiceCatalogueSchema.safeParse(c).success).toBe(false);
+  });
+
+  it("pins the audio: changing a clip's hash or transcript, a description or a model changes the catalogue hash", () => {
+    const base = catalogueHash(withClips({ models: [{ role: "voice-clone", name: "Base", revision: "1" }] }));
+    const edit = (f: (c: VoiceCatalogue) => void, models?: VoiceCatalogue["models"]) => {
+      const c = withClips(models ? { models } : { models: [{ role: "voice-clone", name: "Base", revision: "1" }] });
+      f(c);
+      return catalogueHash(c);
+    };
+    expect(edit(() => undefined)).toBe(base);
+    expect(edit((c) => void (c.voices[3]!.clip!.sha256 = sha("re-recorded")))).not.toBe(base);
+    expect(edit((c) => void (c.voices[3]!.clip!.transcript = "Another sentence entirely."))).not.toBe(base);
+    expect(edit((c) => void (c.voices[3]!.description = "A different description."))).not.toBe(base);
+    expect(edit(() => undefined, [{ role: "voice-clone", name: "Base", revision: "2" }])).not.toBe(base);
+    expect(edit(() => undefined, [{ role: "voice-clone", name: "Base", revision: "1", weightsSha256: sha("w") }])).not.toBe(base);
+  });
+
+  it("does not depend on the order of the models", () => {
+    const a = { role: "voice-design" as const, name: "D", revision: "1" };
+    const b = { role: "voice-clone" as const, name: "C", revision: "1" };
+    expect(catalogueHash(withClips({ models: [a, b] }))).toBe(catalogueHash(withClips({ models: [b, a] })));
+  });
+
+  it("requireClonable names the voices that lack a clip or description", () => {
+    expect(() => requireClonable(STUB_VOICE_CATALOGUE)).toThrow(/voices without a reference clip and description: stub-announcer, stub-narrator/);
+    const partial = withClips();
+    delete partial.voices[5]!.clip;
+    expect(() => requireClonable(partial)).toThrow(/stub-f4/);
+  });
+
+  it("hashes a transcript as UTF-8, matching the local audio service", () => {
+    expect(transcriptHash("The night air is chill.")).toBe(sha("The night air is chill."));
+    expect(transcriptHash("café “quoted”")).toBe(createHash("sha256").update(Buffer.from("café “quoted”", "utf8")).digest("hex"));
   });
 });
