@@ -39,6 +39,16 @@ class CatalogueTests(unittest.TestCase):
             self.assertEqual((clip.sha256, clip.transcript), (sha256(clip.path.read_bytes()), TRANSCRIPT))
             self.assertEqual(clip.transcript_sha256, sha256(TRANSCRIPT.encode("utf-8")))
 
+    def test_loads_the_committed_voice_catalogue(self):
+        path = ROOT.parent.parent / "assets" / "voices" / "catalogue.json"
+        voices = [v["id"] for v in json.loads(path.read_text(encoding="utf-8"))["voices"]]
+        clips = load_catalogue(path)
+        self.assertEqual(sorted(clips), sorted(voices))
+        for voice_id, clip in clips.items():
+            with self.subTest(voice=voice_id):
+                info = wav_info(clip.path.read_bytes())
+                self.assertEqual((info["rate"], info["channels"], info["width"]), (24000, 1, 2))
+
     def test_refuses_a_clip_that_does_not_match_its_hash(self):
         def tamper(entries):
             entries[0]["clip"]["sha256"] = "0" * 64

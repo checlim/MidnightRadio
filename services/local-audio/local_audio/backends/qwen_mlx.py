@@ -1,7 +1,7 @@
 """Qwen3-TTS Base voice cloning on Apple Silicon, through mlx-audio.
 
 Every line is spoken by cloning the voice's reference clip, so a character sounds the same in
-every line. Delivery hints are not used yet (Task 5.1 spike, option a); they are still part of the
+every line. Delivery hints are not used (Task 5.1 decision, option a); they are still part of the
 cache key on the TypeScript side, so adopting another option later re-renders only those lines.
 
 Standard output carries only the service's one "listening" line, so anything the model library

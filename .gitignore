@@ -17,3 +17,4 @@ __pycache__/
 .venv/
 .python-version
 services/local-audio/spike-output/
+services/local-audio/catalogue-candidates/

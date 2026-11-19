@@ -1,0 +1,51 @@
+{
+  "comment": "Voice designs for the Qwen3-TTS catalogue. Each description is an archetype: no real person, performer or recording is named or imitated. Designed with Qwen3-TTS-12Hz-1.7B-VoiceDesign; one take per voice is chosen by ear (picks.json) and becomes its reference clip.",
+  "referenceText": "Good evening. The night is cold, the road is long, and the old house waits at the end of it.",
+  "seed": 1940,
+  "reserved": { "announcer": "announcer", "narrator": "narrator" },
+  "voices": [
+    { "id": "announcer", "name": "The Announcer", "gender": "masculine", "ageBands": ["adult"], "description": "A deep, warm, booming male radio announcer in his forties, measured and theatrical, crisp diction, studio microphone, mid-twentieth-century broadcast style." },
+    { "id": "narrator", "name": "The Narrator", "gender": "feminine", "ageBands": ["adult"], "description": "A calm, clear female storyteller in her thirties with a low, even, slightly husky tone, unhurried pacing, intimate and close to the microphone." },
+
+    { "id": "solicitor", "name": "Young solicitor", "gender": "masculine", "ageBands": ["young-adult", "adult"], "description": "A young English solicitor in his late twenties, educated and polite, slightly nervous, clear tenor voice, earnest." },
+    { "id": "young-gentleman", "name": "Young gentleman", "gender": "masculine", "ageBands": ["young-adult"], "description": "A confident, warm young English gentleman of good family in his twenties, open-hearted and impulsive, rich baritone, upper-class accent." },
+    { "id": "young-american", "name": "Young American", "gender": "masculine", "ageBands": ["young-adult", "adult"], "description": "An easygoing young man from the American South in his late twenties, relaxed drawl, dry humour, steady and brave." },
+    { "id": "young-workman", "name": "Young workman", "gender": "masculine", "ageBands": ["young-adult"], "description": "A cheerful young London labourer in his twenties, quick and chatty, broad working-class accent, a little cheeky." },
+
+    { "id": "doctor", "name": "Asylum doctor", "gender": "masculine", "ageBands": ["adult", "young-adult"], "description": "A precise, thoughtful English physician in his thirties, quietly earnest, measured scientific diction, a hint of melancholy." },
+    { "id": "madman", "name": "Feverish inmate", "gender": "masculine", "ageBands": ["adult"], "description": "An excitable, feverish man in his fifties, voice veering between wheedling softness and sudden intensity, quick breathless phrasing." },
+    { "id": "inspector", "name": "Police inspector", "gender": "masculine", "ageBands": ["adult"], "description": "A gruff, steady London police inspector in his forties, practical and unflappable, low gravelly voice." },
+    { "id": "clergyman", "name": "Clergyman", "gender": "masculine", "ageBands": ["adult", "older"], "description": "A gentle, sonorous English clergyman in his fifties, kindly and slow, resonant voice used to filling a church." },
+    { "id": "sea-captain", "name": "Sea captain", "gender": "masculine", "ageBands": ["adult"], "description": "A stern, weathered Scottish sea captain in his forties, clipped commands, voice roughened by wind and salt." },
+    { "id": "coachman", "name": "Mountain coachman", "gender": "masculine", "ageBands": ["adult"], "description": "A rough, taciturn Central European coachman in his forties, deep gravelly voice, heavy accent, few words." },
+    { "id": "innkeeper", "name": "Innkeeper", "gender": "masculine", "ageBands": ["adult", "older"], "description": "A hearty, booming German innkeeper in his fifties, jovial and loud, thick accent, laughs easily." },
+
+    { "id": "nobleman", "name": "Old nobleman", "gender": "masculine", "ageBands": ["older"], "description": "An elderly European nobleman with a slow, courteous, cultured baritone, faintly accented English, quiet menace beneath perfect politeness." },
+    { "id": "professor", "name": "Old professor", "gender": "masculine", "ageBands": ["older"], "description": "An elderly Dutch scholar in his sixties, warm, emphatic and eccentric, idiosyncratic English with a strong Dutch accent, sudden bursts of energy." },
+    { "id": "old-sailor", "name": "Old sailor", "gender": "masculine", "ageBands": ["older"], "description": "A very old Yorkshire fisherman near ninety, creaky and wheezy, broad northern dialect, garrulous and grumbling." },
+    { "id": "old-servant", "name": "Old servant", "gender": "masculine", "ageBands": ["older"], "description": "A frail, devoted elderly English manservant in his seventies, soft quavering voice, deferential and worried." },
+    { "id": "old-judge", "name": "Old judge", "gender": "masculine", "ageBands": ["older", "adult"], "description": "A dry, authoritative English magistrate in his sixties, slow and deliberate, crisp consonants, faintly impatient." },
+
+    { "id": "boy-teen", "name": "Teenage boy", "gender": "masculine", "ageBands": ["teen"], "description": "An eager English boy of sixteen, voice still breaking, quick and excitable, working-class accent." },
+    { "id": "boy-child", "name": "Young boy", "gender": "masculine", "ageBands": ["child"], "description": "A bright, curious English boy of about eight, high clear voice, innocent and quick." },
+
+    { "id": "young-wife", "name": "Young wife", "gender": "feminine", "ageBands": ["young-adult", "adult"], "description": "An intelligent, warm young Englishwoman in her twenties, steady and resolute, clear mezzo voice, gentle but strong." },
+    { "id": "society-girl", "name": "Society girl", "gender": "feminine", "ageBands": ["young-adult", "teen"], "description": "A bright, playful young English society woman of nineteen, light and teasing, sweet high voice, quick laughter." },
+    { "id": "maid", "name": "Housemaid", "gender": "feminine", "ageBands": ["young-adult"], "description": "A quick, cheerful young Irish housemaid in her twenties, lilting accent, brisk and warm." },
+    { "id": "seductress", "name": "Pale lady", "gender": "feminine", "ageBands": ["young-adult", "adult"], "description": "A silky, languid young woman with a low, honeyed voice, slow and teasing, faintly foreign, with something cold and hungry beneath the sweetness." },
+
+    { "id": "landlady", "name": "Village landlady", "gender": "feminine", "ageBands": ["adult", "older"], "description": "An anxious Central European innkeeper's wife in her fifties, pleading and fearful, strong accent, voice trembling with urgency." },
+    { "id": "governess", "name": "Governess", "gender": "feminine", "ageBands": ["adult"], "description": "A crisp, proper English governess in her forties, precise diction, cool and composed, faintly stern." },
+    { "id": "nurse", "name": "Nurse", "gender": "feminine", "ageBands": ["adult", "young-adult"], "description": "A kind, practical English nurse in her thirties, calm and reassuring, warm mid-range voice." },
+
+    { "id": "dowager", "name": "Invalid mother", "gender": "feminine", "ageBands": ["older"], "description": "A frail, gentle English widow in her sixties, an invalid, soft breathy voice, affectionate and easily tired." },
+    { "id": "nun", "name": "Elderly nun", "gender": "feminine", "ageBands": ["older"], "description": "A serene elderly nun in her seventies, soft-spoken and kindly, slow careful English with a faint Central European accent." },
+    { "id": "crone", "name": "Old woman", "gender": "feminine", "ageBands": ["older"], "description": "A very old village woman, cracked and reedy voice, ominous and muttering, heavy rural accent." },
+
+    { "id": "girl-teen", "name": "Teenage girl", "gender": "feminine", "ageBands": ["teen"], "description": "A shy, sweet English girl of fifteen, soft clear voice, hesitant and polite." },
+    { "id": "girl-child", "name": "Young girl", "gender": "feminine", "ageBands": ["child"], "description": "A small English girl of about seven, high bright voice, earnest and a little breathless." },
+
+    { "id": "neutral-adult", "name": "Calm stranger", "gender": "neutral", "ageBands": ["adult", "young-adult"], "description": "An androgynous adult voice of indeterminate gender, calm and even, mid-range pitch, neutral English accent, unreadable." },
+    { "id": "neutral-older", "name": "Ageless whisperer", "gender": "neutral", "ageBands": ["older", "adult"], "description": "An ageless, androgynous voice, dry and papery, quiet and uncanny, slow deliberate speech with an air of secrets." }
+  ]
+}

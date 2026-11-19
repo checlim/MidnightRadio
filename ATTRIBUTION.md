@@ -24,6 +24,12 @@ The files are bundled unmodified in `fixtures/books/`, pinned by SHA-256 in `fix
 
 Covers and title pages in both editions use the League Spartan and Sorts Mill Goudy typefaces by The League of Moveable Type.
 
+## Voices
+
+The reference clips in `assets/voices/clips/` were generated for this project with [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) 1.7B VoiceDesign (Apache-2.0), using the MLX build `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16` at revision `7d3824abff87e49756bb0f83fb5411de75d160c4`. Each voice was designed from a written archetype description in `assets/voices/voices.json`; no real person, performer or recording was named, imitated or used as input. Every clip says the same sentence, written for this project: "Good evening. The night is cold, the road is long, and the old house waits at the end of it."
+
+Take N of a voice was rendered with seed 1940 + N − 1; the chosen take per voice is recorded in `assets/voices/picks.json`, and each clip's SHA-256 in `assets/voices/catalogue.json`. Character lines are cloned from these clips at render time with Qwen3-TTS 1.7B Base (Apache-2.0).
+
 ## Sound effects and music
 
 None bundled yet. Each CC0 or project-created asset will be listed here with its source and licence when the sound library is added (task 6).

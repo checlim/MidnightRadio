@@ -57,7 +57,7 @@ It is a model server on a personal machine, so:
 
 ## The `qwen-mlx` backend (Apple Silicon)
 
-Clones each catalogue voice from its reference clip with Qwen3-TTS 1.7B Base, so a character sounds the same on every line. Delivery hints are accepted but not used yet (see Task 5.1). Needs Python 3.11+ for `mlx-audio`; this was set up and measured on an Apple M2 with 16 GB.
+Clones each catalogue voice from its reference clip with Qwen3-TTS 1.7B Base, so a character sounds the same on every line. Delivery hints are accepted but not used (Task 5.1 decision, option a), so each voice stays identical on every line. Needs Python 3.11+ for `mlx-audio`; this was set up and measured on an Apple M2 with 16 GB.
 
 1. Install the exact package set into a local, git-ignored environment:
 
@@ -93,5 +93,22 @@ Tests that need the model are skipped elsewhere. To run them here:
 MR_QWEN_BASE=<Base snapshot dir> MR_QWEN_DESIGN=<VoiceDesign snapshot dir> HF_HUB_OFFLINE=1 \
   .venv/bin/python -m unittest tests.test_qwen_mlx
 ```
+
+## Rebuilding the voice catalogue
+
+`assets/voices/catalogue.json` is built from the designs in `assets/voices/voices.json` (needs the VoiceDesign weights):
+
+1. Render three candidate takes per voice into the git-ignored `catalogue-candidates/` folder, then open its `index.html` to listen:
+   ```sh
+   HF_HUB_OFFLINE=1 .venv/bin/python tools/design_voices.py --takes 3
+   ```
+   Take N uses seed 1940 + N − 1, so every take can be reproduced. `--only id,id` renders just some voices.
+2. Record the chosen take for each voice in `assets/voices/picks.json`.
+3. Copy the chosen takes into `assets/voices/clips/` and write the catalogue with their hashes (standard library only):
+   ```sh
+   uv run --no-project --python 3.10 python tools/assemble_catalogue.py
+   ```
+
+A changed catalogue changes its catalogue hash, which `packages/tts/src/voice-catalogue.test.ts` pins; update the pin in the same commit.
 
 A CUDA backend (`qwen-torch`, `qwen-tts`) and the MOSS-SoundEffect backend for `/sfx` are not built.
