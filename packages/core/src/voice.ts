@@ -298,7 +298,7 @@ export const assignableFrom = (inventory: InventoryCharacter[]): AssignableChara
 
 /**
  * Offline catalogue for tests and the StubProvider. Real catalogues are pinned per TTS provider
- * and model (task 8.1); never use this one for paid synthesis.
+ * and model (task 5.1); never use this one for paid synthesis.
  */
 export const STUB_VOICE_CATALOGUE: VoiceCatalogue = {
   id: "stub-voices-1",

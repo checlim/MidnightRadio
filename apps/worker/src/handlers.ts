@@ -12,7 +12,7 @@ export interface HandlerDeps {
 
 /**
  * Job kinds this worker can run. Empty until the pipeline stages exist: ingest (task 3), cast
- * (task 4), adapt and validate (tasks 6–7), render (task 8) and mix (task 9) register here.
+ * (task 4), render (task 5), adapt and validate (tasks 7–8) and mix (task 9) register here.
  * Jobs of unregistered kinds stay queued.
  */
 export function createHandlers(_deps: HandlerDeps): Record<string, JobHandler> {

@@ -1,5 +1,8 @@
 # Implementation Plan — Midnight Radio
 
+> **Task order:** tasks are numbered in execution order. Task 5 (TTS rendering and the local audio service) comes before the sound library (Task 6) because the foley generation in 6.1 uses the service built in 5.1. Tasks 5–8 were renumbered from an earlier plan (old 8 → 5, old 5 → 6, old 6 → 7, old 7 → 8); the commit message of `da7f2ed` still says "Task 5.1" for what is now 6.1.
+> Still open from earlier tasks: 2.3 (ledger and guard wiring, finished with tasks 5, 7 and 11), 4.3 and 4.4. Do 4.3 after 5.2, since its targeted re-render uses the render cache keys.
+
 - [x] 1. Scaffold monorepo and core scene-based Script schema
   - Create pnpm workspace (`Node 24`, strict TypeScript) with `apps/web`, `apps/worker`, `packages/{core,ingest,llm,tts,mix}`, `mcp/sfx-library`
   - Implement strict Zod boundary checks (unknown fields, non-empty text/scenes, unique scene IDs, bounded durations/gains, asset kinds) and define schemas for `Script`, `Scene` (with scene-scoped `SceneBed`), and `Segment` (without brittle LLM `sourceSpan` offsets), plus exported JSON Schema generator
@@ -10,10 +13,10 @@
   - [x] 2.1 Migrations for `books`, `chapters` (with `canonical_text`), `cast_members`, `scripts`, `segments`, `episodes`, `jobs` (with `lease_until`), `usage` (with `day_utc`), and durable `budget_reservations`; include source quote inventory and parser/normaliser versions
   - [x] 2.2 Resumable job runner (atomic claim, lease heartbeat, ownership fencing before publication, crash recovery on restart)
     - Done: `JobQueue` and `runOnce`/`runWorker` in `apps/worker/src/jobs/` (atomic claim, heartbeats, DB-write fencing, lease-expiry reclaim, multi-process claim test); entrypoint `apps/worker/src/main.ts` (`pnpm -C apps/worker start`) opens and migrates the `DATA_DIR` database, validates config at boot, and releases the in-flight job on SIGTERM/SIGINT within `WORKER_SHUTDOWN_TIMEOUT_MS`
-    - Deferred: fencing of file outputs (episode MP3/VTT publication) is built with the render and mix steps in tasks 8–9, using `publish()` around the atomic rename
+    - Deferred: fencing of file outputs (episode MP3/VTT publication) is built with the render and mix steps in tasks 5 and 9, using `publish()` around the atomic rename
   - [ ] 2.3 Operator-controlled per-Book TTS budget + global daily TTS/LLM caps (`GLOBAL_DAILY_TTS_CHAR_LIMIT`, `GLOBAL_DAILY_LLM_TOKEN_LIMIT`); transactional reservations/settlement for every paid call, retries and uncertain outcomes; rate-limit all generation routes and optionally gate with `UPLOAD_PASSKEY`; missing/zero caps disable paid calls
     - Done: `BudgetLedger` in `packages/db` (reservations, fail-closed settlement, overrun/estimated flags, uncertain outcomes, `BOOK_TTS_CHAR_LIMIT` ceiling) and `GenerationGuard` in `apps/web/src/server/guards.ts` (rate limit, passkey, lockout, IPv6 /64 keys)
-    - Remaining: call the ledger from every paid LLM/TTS call (tasks 4, 6, 8) and apply the guard to every generation route with a trusted client IP (task 11), with a test covering each route
+    - Remaining: call the ledger from every paid LLM/TTS call (tasks 4, 5 and 7) and apply the guard to every generation route with a trusted client IP (task 11), with a test covering each route
   - _Requirements: 8.1, 8.2, 8.4_
 
 - [x] 3. EPUB ingestion and property-based parser verification
@@ -22,10 +25,10 @@
     - Also in place for 3.2 (tests still to add there): DRM, not-an-EPUB, damaged, no-text and size rejections; ZIP entry-count, path, symlink, size, ratio, total-inflation and deadline limits; rejection of XML entity declarations
   - [x] 3.2 Versioned typography/quote comparison normaliser; preserve source layout and extract quotes before folding directional marks. Reject DRM/malformed/empty/>20 MB files, ZIP traversal/bombs and external entities; never fetch external EPUB resources
     - Done: `canonicaliseText`/`normaliseForComparison` in `packages/core` (`norm-1`); chapters carry unfolded `sourceText`, `canonicalText` and `normaliserVersion`. Rejection tests cover DRM, encrypted entries, not-an-EPUB, truncated and damaged packages, no text, >20 MB, path traversal, symlinks, entry count, ratio and declared-size ZIP bombs, inflation limits, the deadline and XML entities; remote references are ignored and the package has no networking code
-    - Note: the quote parser itself (spans, nesting, ambiguity diagnostics) is task 7.1; it runs on `sourceText`
+    - Note: the quote parser itself (spans, nesting, ambiguity diagnostics) is task 8.1; it runs on `sourceText`
   - [x] 3.3 Scene-break detection before whitespace folding and >8,000-word splitter ("Part 1 of N"), with sentence/word fallback for oversized paragraphs and source-mapped quote fragments at part boundaries
     - Done: scene breaks come from block structure kept by extraction (`<hr>`, empty paragraphs) plus ornament paragraphs (`* * *`, `⁂`), which leave the text. `splitChapter` in `packages/ingest/src/split.ts` uses the fewest parts, balances them, and prefers scene breaks > headings/blank paragraphs > paragraph ends; sentence and word cuts only inside an oversized paragraph; cuts only at whitespace canonical text keeps. Parts are exact `sourceText` slices with offsets; given quote spans, it avoids cutting inside them and returns per-part fragments with parent ID and continuation flags. Every chapter has `parts` (one unlabelled part when ≤ 8,000 words)
-    - Note: quote spans come from the 7.1 parser; until then ingestion passes none
+    - Note: quote spans come from the 8.1 parser; until then ingestion passes none
   - [x] 3.4 Property-based tests (`fast-check`): splitter ≤8,000-word bound + exact non-whitespace token preservation; normalisation idempotence + inline-tag adjacency
     - Done: `split.property.test.ts` (limit, exact ordered slices, canonical token sequence and labels at small limits and at 8,000 words for chapters up to 30,000 words, with oversized paragraphs, huge tokens, invisible joiners and quote fragments); `normalise.property.test.ts` (idempotence, NFC output, no lost letters/case/punctuation, paragraph structure); `extract.property.test.ts` (words split across nested inline tags stay whole; whitespace in or around tags becomes one space). Each property was shown to catch a deliberately planted bug
   - [x] 3.5 Bundle public-domain Gothic fixtures (*The Tell-Tale Heart* / *House of Usher* for atmosphere + *Dracula* Ch. 1 for demo playback; add a source-supported dialogue passage and at least two chapters sharing a character for continuity tests)
@@ -39,42 +42,45 @@
     - Remaining: nothing calls `extractCharacters` yet. The `cast` job handler and persistence to `cast_members` need ingested chapters stored (upload flow, task 11) and the voice assignment of 4.2. A real-model run needs `LLM_API_KEY`
   - [x] 4.2 Order-invariant voice assignment from the same frozen inventory and pinned voice catalogue; reserved `Announcer`/`Narrator` voices, stable tie-breaks, pause on voice exhaustion
     - Done: `packages/core/src/voice.ts`: Zod-validated `VoiceCatalogue` (provider, model, version, seed, reserved Announcer/Narrator voices) with a content hash; `assignVoices` serves speaking characters in priority order (mentions desc, name, id), each taking the best gender/age match still free, ties broken by a seed-keyed hash; characters who never speak get no voice; `CastingPausedError` (no partial result) when speakers outnumber voices or a character is named Announcer/Narrator; `buildCast` produces the stored Cast. `packages/db`: migration 3, `saveCast`/`writeCast`/`loadCast`: Announcer and Narrator are Cast rows, so the unique `(book_id, voice_id)` index keeps their voices from characters; the pinned catalogue freezes the Cast (`CastFrozenError`). Offline `STUB_VOICE_CATALOGUE` (10 character voices) for tests; planted-bug checks confirm the tests catch a leaked reserved voice, a shared voice, a missing pause and input-order dependence
-    - Remaining: the real catalogue is pinned per TTS provider and model in 8.1. The `cast` job handler (call `extractCharacters`, `buildCast`, then `writeCast` inside `publish`) waits for stored chapters (task 11). A pause has no job state of its own yet: the handler will fail the job with the error's user-facing message
+    - Remaining: the real catalogue is pinned per TTS provider and model in 5.1. The `cast` job handler (call `extractCharacters`, `buildCast`, then `writeCast` inside `publish`) waits for stored chapters (task 11). A pause has no job state of its own yet: the handler will fail the job with the error's user-facing message
   - [ ] 4.3 Add-new-character flow preserving existing voices; enforce unique/non-reserved voices on edits; targeted speech invalidation followed by episode re-mix and VTT/marker regeneration
+    - Order: do after 5.2; targeted speech invalidation uses the render cache keys
   - [ ] 4.4 Property-based test (`fast-check`): voice assignment invariance under permutations of the same frozen inventory (not repeat LLM extractions) and reserved-voice exclusion
   - _Requirements: 2.1–2.6_
 
-- [ ] 5. `sfx-library` MCP server and CC0 foley pack
-  - [ ] 5.1 Curate 30–50 Gothic radio foley & music cues (thunder, rain bed, carriage wheels, heavy door creak, hearth fire, footsteps, clock chime, theme/sting/transition) into `assets/sfx/index.json` + `ATTRIBUTION.md`. Foley may be CC0 or generated offline with MOSS-SoundEffect v2.0 (Apache 2.0, run locally through `services/local-audio` from 8.1, never at runtime or in CI); music cues stay CC0 or hand-made
+- [ ] 5. TTS rendering with atomic cache
+  - [ ] 5.1 `TtsProvider` interface, offline `StubProvider` (valid 24 kHz 16-bit mono WAV proportional to word count), and local `QwenTtsProvider` (no cloud TTS)
+    - Order: built before Task 6. The `/sfx` endpoint of `services/local-audio` is what 6.1 uses to generate foley
+    - `services/local-audio`: Python service on `127.0.0.1` hosting Qwen3-TTS (VoiceDesign + Base) and MOSS-SoundEffect v2.0 from pinned local weights; reports model versions and weights hashes. Document setup for CUDA and Apple Silicon (MLX port) and record which one was used
+    - Voice catalogue: write period voice descriptions (gender, age band; never a real person), generate reference clips with VoiceDesign, choose takes by ear, commit clips + transcripts + hashes in `assets/voices/catalogue.json` in the `VoiceCatalogue` format from 4.2. Size it from the speaking characters 4.1 finds in *Dracula*, plus headroom
+    - `QwenTtsProvider` renders through Base voice cloning from the reference clip; validates the service's response and WAV output
+    - Spike: delivery hints with cloning (Base has no instruction control). Compare delivery ignored, per-delivery reference clips and VoiceDesign per line; choose the option that keeps voices recognisable across a chapter and record the result
+  - [ ] 5.2 Atomic content-hash render cache: versioned exact-request cache keys, unique same-directory temp WAV, full PCM format/data-length/frame validation + flush + atomic rename, validate cache hits, coalesce identical requests, bounded concurrency (default 2); crash tests around rename/DB commit
+  - [ ] 5.3 Exponential-backoff retries (≤3), isolated per-segment failure handling, pre-render character count and render-time estimate, and zero secret logging
+  - _Requirements: 5.1–5.6, 8.2, 8.3_
+
+- [ ] 6. `sfx-library` MCP server and CC0 foley pack
+  - [ ] 6.1 Curate 30–50 Gothic radio foley & music cues (thunder, rain bed, carriage wheels, heavy door creak, hearth fire, footsteps, clock chime, theme/sting/transition) into `assets/sfx/index.json` + `ATTRIBUTION.md`. Foley may be CC0 or generated offline with MOSS-SoundEffect v2.0 (Apache 2.0, run locally through `services/local-audio` from 5.1, never at runtime or in CI); music cues stay CC0 or hand-made
+    - Order: needs `services/local-audio` (`/sfx`) from 5.1, which is built first
     - Confirm the model licence on the Hugging Face model card before generating
     - Keep a reproducible prompt list (`assets/sfx/prompts.json`: prompt, seed, target duration, model version + weights hash); generate several takes per cue and choose by ear
     - Keep 48 kHz originals as masters; commit 24 kHz mono 16-bit WAVs, peak-normalised and checked for clicks
     - Crossfade-loop and listen-test ambience beds before setting `loopable: true`
     - `ATTRIBUTION.md`: CC0 assets list source URL + licence; generated assets list model, version, weights hash, prompt, seed and date
-  - [ ] 5.2 Implement stdio MCP server (`search_sfx`, `get_sfx`, `list_music_cues`, `audit_script_sfx`); register in `.kiro/settings/mcp.json` and create `script-auditor` via the installed Kiro version's supported UI/schema; record limitations if unavailable. Use the same versioned catalogue, pinned cue map and kind/loopability checks at runtime and in MCP
+  - [ ] 6.2 Implement stdio MCP server (`search_sfx`, `get_sfx`, `list_music_cues`, `audit_script_sfx`); register in `.kiro/settings/mcp.json` and create `script-auditor` via the installed Kiro version's supported UI/schema; record limitations if unavailable. Use the same versioned catalogue, pinned cue map and kind/loopability checks at runtime and in MCP
   - _Requirements: 3.5, 9.2_
 
-- [ ] 6. Single-pass radio adaptation
-  - [ ] 6.1 Adapter prompt combining `radio-voice.md` steering, chapter-local view of persisted `Cast` (exclude future plot descriptions), in-process `assets/sfx/index.json` catalogue (no runtime stdio MCP loop), and `canonical_text`
-  - [ ] 6.2 Structured JSON output enforcing `coldOpen` announcer, `scenes` with optional `SceneBed` ambience, ≤35-word present-tense condensed narration (verbatim quotes exempt), and spoiler-free cliffhanger `close`
-  - [ ] 6.3 Low-confidence speaker fallback: assign quoted text *verbatim* to `Narrator` (`containsVerbatimQuote: true`) containing only the quote; place any source-supported lead-in in a separate unmarked segment
+- [ ] 7. Single-pass radio adaptation
+  - [ ] 7.1 Adapter prompt combining `radio-voice.md` steering, chapter-local view of persisted `Cast` (exclude future plot descriptions), in-process `assets/sfx/index.json` catalogue (no runtime stdio MCP loop), and `canonical_text`
+  - [ ] 7.2 Structured JSON output enforcing `coldOpen` announcer, `scenes` with optional `SceneBed` ambience, ≤35-word present-tense condensed narration (verbatim quotes exempt), and spoiler-free cliffhanger `close`
+  - [ ] 7.3 Low-confidence speaker fallback: assign quoted text *verbatim* to `Narrator` (`containsVerbatimQuote: true`) containing only the quote; place any source-supported lead-in in a separate unmarked segment
   - _Requirements: 3.1–3.7_
 
-- [ ] 7. Deterministic validation gate
-  - [ ] 7.1 Referential validator (Cast speakers, `assets/sfx/index.json` IDs, cold open/close rules) + source quote parser with ambiguity diagnostics, ordered non-overlapping occurrence alignment and reverse checks against invented/duplicated speech; store hashes/parser versions. Preserve quote fragments across part boundaries
-  - [ ] 7.2 Retry-with-feedback loop (≤2 retries passing exact schema errors + unmatched source quotes) and fail-closed `failed` state
-  - [ ] 7.3 Unit + `fast-check` property tests for quote extraction and ordered alignment (`0 <= fidelity <= 1`, all quotes in order = `1.0`); repeated/nested/reordered/invented quotes, split segments, part boundaries, unbalanced and genuinely quote-free fixtures
+- [ ] 8. Deterministic validation gate
+  - [ ] 8.1 Referential validator (Cast speakers, `assets/sfx/index.json` IDs, cold open/close rules) + source quote parser with ambiguity diagnostics, ordered non-overlapping occurrence alignment and reverse checks against invented/duplicated speech; store hashes/parser versions. Preserve quote fragments across part boundaries
+  - [ ] 8.2 Retry-with-feedback loop (≤2 retries passing exact schema errors + unmatched source quotes) and fail-closed `failed` state
+  - [ ] 8.3 Unit + `fast-check` property tests for quote extraction and ordered alignment (`0 <= fidelity <= 1`, all quotes in order = `1.0`); repeated/nested/reordered/invented quotes, split segments, part boundaries, unbalanced and genuinely quote-free fixtures
   - _Requirements: 4.1–4.4_
-
-- [ ] 8. TTS rendering with atomic cache
-  - [ ] 8.1 `TtsProvider` interface, offline `StubProvider` (valid 24 kHz 16-bit mono WAV proportional to word count), and local `QwenTtsProvider` (no cloud TTS)
-    - `services/local-audio`: Python service on `127.0.0.1` hosting Qwen3-TTS (VoiceDesign + Base) and MOSS-SoundEffect v2.0 from pinned local weights; reports model versions and weights hashes. Document setup for CUDA and Apple Silicon (MLX port) and record which one was used
-    - Voice catalogue: write period voice descriptions (gender, age band; never a real person), generate reference clips with VoiceDesign, choose takes by ear, commit clips + transcripts + hashes in `assets/voices/catalogue.json` in the `VoiceCatalogue` format from 4.2. Size it from the speaking characters 4.1 finds in *Dracula*, plus headroom
-    - `QwenTtsProvider` renders through Base voice cloning from the reference clip; validates the service's response and WAV output
-    - Spike: delivery hints with cloning (Base has no instruction control). Compare delivery ignored, per-delivery reference clips and VoiceDesign per line; choose the option that keeps voices recognisable across a chapter and record the result
-  - [ ] 8.2 Atomic content-hash render cache: versioned exact-request cache keys, unique same-directory temp WAV, full PCM format/data-length/frame validation + flush + atomic rename, validate cache hits, coalesce identical requests, bounded concurrency (default 2); crash tests around rename/DB commit
-  - [ ] 8.3 Exponential-backoff retries (≤3), isolated per-segment failure handling, pre-render character count and render-time estimate, and zero secret logging
-  - _Requirements: 5.1–5.6, 8.2, 8.3_
 
 - [ ] 9. Scene-based ffmpeg mixing & loudness mastering
   - [ ] 9.1 Single `ffmpeg` wrapper in `packages/mix` (logs full filter graph on error); sample-based timeline with 250 ms only between adjacent speech turns; 600 ms scene transitions replace rather than stack with turn gaps; discrete cues occupy time

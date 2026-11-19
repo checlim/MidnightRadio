@@ -26,4 +26,4 @@ Covers and title pages in both editions use the League Spartan and Sorts Mill Go
 
 ## Sound effects and music
 
-None bundled yet. Each CC0 or project-created asset will be listed here with its source and licence when the sound library is added (task 5).
+None bundled yet. Each CC0 or project-created asset will be listed here with its source and licence when the sound library is added (task 6).
