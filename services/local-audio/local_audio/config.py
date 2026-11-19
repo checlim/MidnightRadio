@@ -27,6 +27,7 @@ class Config:
     max_text_chars: int = 4_000
     queue_timeout_s: float = 600.0
     fake_delay_ms: int = 0
+    tts_model: Optional[Path] = None
 
 
 def parse_config(argv: Sequence[str], env: Mapping[str, str]) -> Config:
@@ -35,6 +36,7 @@ def parse_config(argv: Sequence[str], env: Mapping[str, str]) -> Config:
     parser.add_argument("--port", type=int, default=8765, help="0 picks a free port")
     parser.add_argument("--catalogue", required=True, type=Path, help="path to catalogue.json")
     parser.add_argument("--backend", required=True, help="model backend; 'fake' returns tones for tests")
+    parser.add_argument("--tts-model", type=Path, help="local Qwen3-TTS Base snapshot directory (qwen-mlx backend)")
     parser.add_argument("--fake-delay-ms", type=int, default=0, help="slow the fake backend down, for timeout tests")
     parser.add_argument("--queue-timeout-s", type=float, default=600.0, help="how long a request waits for the model")
     try:
@@ -61,4 +63,5 @@ def parse_config(argv: Sequence[str], env: Mapping[str, str]) -> Config:
         token=token,
         queue_timeout_s=args.queue_timeout_s,
         fake_delay_ms=args.fake_delay_ms,
+        tts_model=args.tts_model,
     )

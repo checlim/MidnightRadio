@@ -2,7 +2,7 @@
 
 A small HTTP service that hosts the audio models (Qwen3-TTS for speech, MOSS-SoundEffect v2.0 for foley) on **the generation machine**. It is never part of the deployed container: the live site only plays pre-rendered episodes.
 
-**Status.** The server, its safety checks and the catalogue verification are built and tested. Only the `fake` backend exists, which returns tones and no speech, so the TypeScript client and the tests can be developed without any model. The real backends are written in the Task 5.1 spike, after the weights are downloaded and measured on this machine. Asking for any other backend exits with "not implemented yet".
+**Status.** Two backends: `qwen-mlx` speaks with Qwen3-TTS on Apple Silicon (built and tested against the real model on an M2), and `fake` returns tones for tests. Sound effects (`/sfx`) have no real backend yet; that comes with the foley task (6.1).
 
 ## Run (fake backend)
 
@@ -55,6 +55,43 @@ It is a model server on a personal machine, so:
 - logs contain the method, path and status only: never bodies, headers or tokens, so dialogue text is not logged;
 - unexpected errors return a generic 500, with only the exception type logged.
 
-## Real backends (not built yet)
+## The `qwen-mlx` backend (Apple Silicon)
 
-Planned from the design: `qwen-mlx` (Apple Silicon, `mlx-audio`) and `qwen-torch` (CUDA, `qwen-tts`) for Qwen3-TTS Base voice cloning, and a MOSS-SoundEffect v2.0 backend for `/sfx`. Weights are loaded from a local path and pinned by hash; nothing is downloaded at render time. Setup instructions will be recorded here after the spike has run them on a real machine.
+Clones each catalogue voice from its reference clip with Qwen3-TTS 1.7B Base, so a character sounds the same on every line. Delivery hints are accepted but not used yet (see Task 5.1). Needs Python 3.11+ for `mlx-audio`; this was set up and measured on an Apple M2 with 16 GB.
+
+1. Install the exact package set into a local, git-ignored environment:
+
+   ```sh
+   cd services/local-audio
+   uv venv --python 3.13 .venv
+   VIRTUAL_ENV=.venv uv pip install -r requirements-mlx.txt
+   ```
+
+2. Download the pinned weights (about 4.5 GB each; VoiceDesign is only needed to design new catalogue voices):
+
+   ```sh
+   .venv/bin/python -c "from huggingface_hub import snapshot_download as d; \
+     d('mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16', revision='a6eb4f68e4b056f1215157bb696209bc82a6db48'); \
+     d('mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16', revision='7d3824abff87e49756bb0f83fb5411de75d160c4')"
+   ```
+
+   Pinned weights: Base `model.safetensors` SHA-256 `81fb76175ff74e69be25fef2cc3e54f016df3034f1514c8e1c89da06a3510cff`; VoiceDesign `96ae28bec2205ec0b5e0c750bea2b8a5deac4f14d33a8a25a5f753299486b70e`; shared speech tokenizer `836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258`. The backend hashes the Base weights at start-up and reports the hash on `/health`; the client refuses weights other than the ones the catalogue pins.
+
+3. Run it offline against the local snapshot (never another revision, never a download):
+
+   ```sh
+   HF_HUB_OFFLINE=1 .venv/bin/python -m local_audio --catalogue ../../assets/voices/catalogue.json \
+     --backend qwen-mlx \
+     --tts-model ~/.cache/huggingface/hub/models--mlx-community--Qwen3-TTS-12Hz-1.7B-Base-bf16/snapshots/a6eb4f68e4b056f1215157bb696209bc82a6db48
+   ```
+
+Measured on the M2 (Task 5.1 spike, `spike/run_spike.py`): 24 kHz mono output; about 1.2–1.6 s of compute per second of audio, median 118 ms per character (the client's default estimate); a fixed seed gives byte-identical audio across processes; one model in memory at a time fits in 16 GB.
+
+Tests that need the model are skipped elsewhere. To run them here:
+
+```sh
+MR_QWEN_BASE=<Base snapshot dir> MR_QWEN_DESIGN=<VoiceDesign snapshot dir> HF_HUB_OFFLINE=1 \
+  .venv/bin/python -m unittest tests.test_qwen_mlx
+```
+
+A CUDA backend (`qwen-torch`, `qwen-tts`) and the MOSS-SoundEffect backend for `/sfx` are not built.

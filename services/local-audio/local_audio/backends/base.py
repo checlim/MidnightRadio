@@ -7,6 +7,10 @@ from typing import Optional
 from ..catalogue import VoiceClip
 
 
+class BackendUnavailable(Exception):
+    """The chosen backend cannot be created on this machine. The message says why."""
+
+
 class BackendError(Exception):
     """A request the backend could not serve. `code` and `message` are safe to send to the client."""
 

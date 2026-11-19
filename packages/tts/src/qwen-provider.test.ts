@@ -95,6 +95,27 @@ describe("connecting", () => {
     expect((await QwenTtsProvider.connect({ baseUrl: service.url, catalogue: pinned })).identity.revision).toBe("rev-A");
   });
 
+  it("pins the weights: refuses different or unreported weights when the catalogue pins a hash, and puts the hash in the identity", async () => {
+    const weights = sha("the pinned weights");
+    const pinned = clonableStubCatalogue({ models: [{ role: "voice-clone", name: "Base", revision: "fake-1", weightsSha256: weights }] });
+    service = await startFakeService(pinned, { tts: { sampleRate: 24_000, ready: true, weightsSha256: sha("other weights") } });
+    expect((await failure(QwenTtsProvider.connect({ baseUrl: service.url, catalogue: pinned }))).message).toMatch(/weights \([0-9a-f]{12}\) are not the ones the catalogue pins/);
+    service.state.tts = { sampleRate: 24_000, ready: true };
+    expect((await failure(QwenTtsProvider.connect({ baseUrl: service.url, catalogue: pinned }))).message).toMatch(/weights \(not reported\)/);
+    service.state.tts = { sampleRate: 24_000, ready: true, weightsSha256: weights };
+    const provider = await QwenTtsProvider.connect({ baseUrl: service.url, catalogue: pinned });
+    expect(provider.identity.settings).toMatchObject({ weightsSha256: weights });
+  });
+
+  it("gives renders from different weights different cache keys", async () => {
+    service = await startFakeService(catalogue, { tts: { sampleRate: 24_000, ready: true, weightsSha256: sha("weights A") } });
+    const a = await QwenTtsProvider.connect({ baseUrl: service.url, catalogue });
+    service.state.tts = { sampleRate: 24_000, ready: true, weightsSha256: sha("weights B") };
+    const b = await QwenTtsProvider.connect({ baseUrl: service.url, catalogue });
+    const { renderCacheKey } = await import("./cache-key.js");
+    expect(renderCacheKey(a, say("Hello."))).not.toBe(renderCacheKey(b, say("Hello.")));
+  });
+
   it("refuses a token the service does not accept, and a catalogue that cannot be cloned from", async () => {
     service = await startFakeService(catalogue, { token: TOKEN });
     const e = await failure(QwenTtsProvider.connect({ baseUrl: service.url, catalogue, token: "wrong-token-value-123456" }));
@@ -274,7 +295,7 @@ describe("rendering", () => {
 
 describe("local audio settings from the environment", () => {
   it("has defaults, and reads each variable", () => {
-    expect(loadQwenConfig({})).toEqual({ baseUrl: "http://127.0.0.1:8765", token: undefined, timeoutMs: 600_000, msPerChar: 70, seed: 0 });
+    expect(loadQwenConfig({})).toEqual({ baseUrl: "http://127.0.0.1:8765", token: undefined, timeoutMs: 600_000, msPerChar: 118, seed: 0 });
     expect(loadQwenConfig({ LOCAL_AUDIO_URL: "http://localhost:9000", LOCAL_AUDIO_TOKEN: ` ${TOKEN} `, LOCAL_AUDIO_TIMEOUT_MS: "90000", LOCAL_AUDIO_MS_PER_CHAR: "12.5", TTS_SEED: "7" })).toEqual({
       baseUrl: "http://localhost:9000",
       token: TOKEN,

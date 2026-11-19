@@ -1,17 +1,23 @@
-from .base import Backend, BackendError, SfxRequest, TtsRequest
+from pathlib import Path
+from typing import Optional
+
+from .base import Backend, BackendError, BackendUnavailable, SfxRequest, TtsRequest
 from .fake import FakeBackend
 
-
-class BackendUnavailable(Exception):
-    """The chosen backend cannot be created on this machine."""
+BACKENDS = ("fake", "qwen-mlx")
 
 
-def create_backend(name: str, fake_delay_ms: int = 0) -> Backend:
+def create_backend(name: str, fake_delay_ms: int = 0, tts_model: Optional[Path] = None) -> Backend:
     if name == "fake":
         return FakeBackend(fake_delay_ms)
-    # The real Qwen3-TTS and MOSS-SoundEffect backends are written during the Task 5.1 spike,
-    # once the weights are downloaded and measured on this machine.
-    raise BackendUnavailable(f"backend '{name}' is not implemented yet (see Task 5.1 in .kiro/specs/midnight-radio/tasks.md)")
+    if name == "qwen-mlx":
+        if tts_model is None:
+            raise BackendUnavailable("the qwen-mlx backend needs --tts-model (a local Qwen3-TTS Base snapshot directory)")
+        from .qwen_mlx import QwenMlxBackend  # imported only when chosen: it needs mlx-audio
+
+        return QwenMlxBackend(tts_model)
+    # A MOSS-SoundEffect backend for /sfx comes with the foley task (6.1).
+    raise BackendUnavailable(f"unknown backend '{name}' (choose one of: {', '.join(BACKENDS)})")
 
 
-__all__ = ["Backend", "BackendError", "BackendUnavailable", "FakeBackend", "SfxRequest", "TtsRequest", "create_backend"]
+__all__ = ["BACKENDS", "Backend", "BackendError", "BackendUnavailable", "FakeBackend", "SfxRequest", "TtsRequest", "create_backend"]

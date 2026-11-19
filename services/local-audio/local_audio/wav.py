@@ -9,7 +9,13 @@ def encode_wav(samples: Iterable[int], sample_rate: int) -> bytes:
     data = array.array("h", samples)
     if sys.byteorder == "big":
         data.byteswap()
-    pcm = data.tobytes()
+    return encode_pcm16(data.tobytes(), sample_rate)
+
+
+def encode_pcm16(pcm: bytes, sample_rate: int) -> bytes:
+    """Wrap little-endian mono 16-bit PCM in a WAV header."""
+    if len(pcm) % 2:
+        raise ValueError("16-bit PCM must have an even number of bytes")
     le = lambda value, size: value.to_bytes(size, "little")  # noqa: E731
     header = (
         b"RIFF" + le(36 + len(pcm), 4) + b"WAVE"

@@ -15,7 +15,7 @@ export interface FakeState {
   model: string;
   apiVersion: number;
   service: string;
-  tts: { sampleRate: number; ready: boolean } | null;
+  tts: { sampleRate: number; ready: boolean; weightsSha256?: string } | null;
   /** Overrides what /health reports for voices. */
   voices?: Record<string, { clipSha256: string; transcriptSha256: string }>;
   token?: string;

@@ -20,8 +20,11 @@ export const LOCAL_AUDIO_SERVICE = "midnight-radio-local-audio";
 export const LOCAL_AUDIO_API_VERSION = 1;
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_MAX_WAV_BYTES = 64 * 1024 * 1024;
-/** Assumed until the Task 5.1 spike measures this machine: about 1 s of rendering per 15 characters. */
-export const ASSUMED_MS_PER_CHAR = 70;
+/**
+ * Render time per character for the pre-render estimate: the median measured in the Task 5.1 spike
+ * (Qwen3-TTS 1.7B Base, bf16, MLX, Apple M2). Override with LOCAL_AUDIO_MS_PER_CHAR on other machines.
+ */
+export const ASSUMED_MS_PER_CHAR = 118;
 
 export interface QwenTtsOptions {
   /** Where the service listens. Must be a loopback address. */
@@ -44,7 +47,7 @@ const HealthSchema = z.looseObject({
   service: z.literal(LOCAL_AUDIO_SERVICE),
   apiVersion: z.number(),
   backend: z.string(),
-  tts: z.object({ model: z.string(), revision: z.string(), sampleRate: z.number(), ready: z.boolean() }).nullable(),
+  tts: z.object({ model: z.string(), revision: z.string(), weightsSha256: sha.optional(), sampleRate: z.number(), ready: z.boolean() }).nullable(),
   voices: z.record(z.string(), z.object({ clipSha256: sha, transcriptSha256: sha })),
 });
 
@@ -76,7 +79,7 @@ export class QwenTtsProvider implements TtsProvider {
   private readonly fetchImpl: typeof fetch;
   private readonly token: string | undefined;
 
-  private constructor(opts: QwenTtsOptions, base: string, clonable: ClonableCatalogue, model: string, revision: string) {
+  private constructor(opts: QwenTtsOptions, base: string, clonable: ClonableCatalogue, model: string, revision: string, weightsSha256: string | undefined) {
     this.base = base;
     this.clonable = clonable;
     this.token = opts.token;
@@ -85,7 +88,13 @@ export class QwenTtsProvider implements TtsProvider {
     this.msPerChar = opts.msPerChar ?? ASSUMED_MS_PER_CHAR;
     this.maxBytes = opts.maxWavBytes ?? DEFAULT_MAX_WAV_BYTES;
     this.fetchImpl = opts.fetch ?? fetch;
-    this.identity = { provider: "qwen3-tts", model, revision, settings: { seed: this.seed, apiVersion: LOCAL_AUDIO_API_VERSION, sampleRate: WAV_SAMPLE_RATE } };
+    // The weights hash is part of the identity, so audio from different weights never shares a cache entry.
+    this.identity = {
+      provider: "qwen3-tts",
+      model,
+      revision,
+      settings: { seed: this.seed, apiVersion: LOCAL_AUDIO_API_VERSION, sampleRate: WAV_SAMPLE_RATE, ...(weightsSha256 ? { weightsSha256 } : {}) },
+    };
     for (const v of clonable.voices) this.fingerprints.set(v.id, `clip:${v.clip.sha256}:${transcriptHash(v.clip.transcript)}`);
   }
 
@@ -120,13 +129,16 @@ export class QwenTtsProvider implements TtsProvider {
     if (pinned && pinned.revision !== h.tts.revision) {
       throw unavailable(`the speech model revision "${h.tts.revision}" is not the one the catalogue pins ("${pinned.revision}")`);
     }
+    if (pinned?.weightsSha256 && pinned.weightsSha256 !== h.tts.weightsSha256) {
+      throw unavailable(`the speech model weights (${h.tts.weightsSha256 ? h.tts.weightsSha256.slice(0, 12) : "not reported"}) are not the ones the catalogue pins (${pinned.weightsSha256.slice(0, 12)})`);
+    }
     for (const v of clonable.voices) {
       const served = h.voices[v.id];
       if (!served) throw unavailable(`the service does not know voice "${v.id}" from the catalogue`);
       if (served.clipSha256 !== v.clip.sha256) throw unavailable(`the service's reference clip for voice "${v.id}" differs from the catalogue's`);
       if (served.transcriptSha256 !== transcriptHash(v.clip.transcript)) throw unavailable(`the service's clip transcript for voice "${v.id}" differs from the catalogue's`);
     }
-    return new QwenTtsProvider(opts, base, clonable, h.tts.model, h.tts.revision);
+    return new QwenTtsProvider(opts, base, clonable, h.tts.model, h.tts.revision, h.tts.weightsSha256);
   }
 
   async voices(): Promise<Voice[]> {

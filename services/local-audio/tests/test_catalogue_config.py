@@ -184,7 +184,9 @@ class ProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             good = write_catalogue(Path(tmp))
             cases = [
-                (["--catalogue", str(good), "--backend", "qwen-mlx"], "not implemented yet"),
+                (["--catalogue", str(good), "--backend", "qwen-mlx"], "needs --tts-model"),
+                (["--catalogue", str(good), "--backend", "qwen-mlx", "--tts-model", str(Path(tmp))], "no model.safetensors"),
+                (["--catalogue", str(good), "--backend", "nonsense"], "unknown backend"),
                 (["--catalogue", str(Path(tmp) / "missing.json"), "--backend", "fake"], "not found"),
                 (["--catalogue", str(good), "--backend", "fake", "--host", "0.0.0.0"], "only listens on 127.0.0.1"),
             ]

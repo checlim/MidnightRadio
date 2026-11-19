@@ -16,3 +16,4 @@ __pycache__/
 *.pyc
 .venv/
 .python-version
+services/local-audio/spike-output/

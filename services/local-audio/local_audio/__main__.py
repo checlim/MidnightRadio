@@ -23,7 +23,7 @@ def main(argv: list[str]) -> int:
     try:
         config = parse_config(argv, os.environ)
         clips = load_catalogue(config.catalogue_path)
-        backend = create_backend(config.backend, config.fake_delay_ms)
+        backend = create_backend(config.backend, config.fake_delay_ms, config.tts_model)
     except (ConfigError, CatalogueError, BackendUnavailable) as err:
         print(f"local_audio: {err}", file=sys.stderr)
         return 2

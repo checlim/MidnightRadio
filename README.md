@@ -96,7 +96,7 @@ Copy `.env.example` to `.env`. Secrets are read only from environment variables 
 | `LLM_API_KEY`, `LLM_MODEL` | Credentials and model for casting and adaptation. Any OpenAI-compatible Chat Completions endpoint with JSON-schema output works. Without a key, no paid LLM call is possible. |
 | `LLM_BASE_URL`, `LLM_TIMEOUT_MS` | Endpoint (default `https://api.openai.com/v1`) and per-request timeout (default 90,000 ms). |
 | `LOCAL_AUDIO_URL`, `LOCAL_AUDIO_TOKEN` | Where the local audio service listens (loopback addresses only; default `http://127.0.0.1:8765`) and its optional access token. |
-| `LOCAL_AUDIO_TIMEOUT_MS`, `LOCAL_AUDIO_MS_PER_CHAR`, `TTS_SEED` | Per-render timeout (default 10 minutes), the assumed render time per character for the pre-render estimate (default 70 ms, to be replaced by a measured value), and the seed sent with every render. |
+| `LOCAL_AUDIO_TIMEOUT_MS`, `LOCAL_AUDIO_MS_PER_CHAR`, `TTS_SEED` | Per-render timeout (default 10 minutes), the assumed render time per character for the pre-render estimate (default 118 ms, measured on an Apple M2 with the 1.7B model; set your own machine's value), and the seed sent with every render. |
 | `GLOBAL_DAILY_TTS_CHAR_LIMIT` | TTS characters allowed per UTC day. TTS runs locally, so this limits render time rather than spend. Missing or `0` disables TTS. |
 | `GLOBAL_DAILY_LLM_TOKEN_LIMIT` | LLM tokens (input plus capped output) allowed per UTC day. Missing or `0` disables paid LLM calls. |
 | `BOOK_TTS_CHAR_LIMIT` | Operator ceiling on any one book's TTS budget (default 60,000). A user-chosen budget can't exceed it. |

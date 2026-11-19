@@ -63,9 +63,9 @@ class Running:
 
 
 @contextmanager
-def serving(backend: Optional[Backend] = None, token: Optional[str] = None, queue_timeout_s: float = 30.0, max_text_chars: int = 4_000, mutate=None):
+def serving(backend: Optional[Backend] = None, token: Optional[str] = None, queue_timeout_s: float = 30.0, max_text_chars: int = 4_000, mutate=None, catalogue_path: Optional[Path] = None):
     with tempfile.TemporaryDirectory() as tmp:
-        catalogue = write_catalogue(Path(tmp), mutate=mutate)
+        catalogue = catalogue_path or write_catalogue(Path(tmp), mutate=mutate)
         config = Config(host="127.0.0.1", port=0, catalogue_path=catalogue, backend="fake", token=token, max_text_chars=max_text_chars, queue_timeout_s=queue_timeout_s)
         server = LocalAudioServer(config, backend or FakeBackend(), load_catalogue(catalogue))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
