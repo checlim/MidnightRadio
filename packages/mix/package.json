@@ -6,9 +6,12 @@
   "main": "src/index.ts",
   "scripts": {
     "typecheck": "tsc -p .",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "sfx:assemble": "tsx scripts/assemble-sfx.ts"
   },
   "dependencies": {
+    "@midnight-radio/core": "workspace:*",
+    "@midnight-radio/tts": "workspace:*",
     "zod": "^4.6.7"
   }
 }

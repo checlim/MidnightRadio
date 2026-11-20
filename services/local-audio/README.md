@@ -128,4 +128,11 @@ SFX_SERVICE_URL=https://<your-tunnel-host> SFX_SERVICE_TOKEN=<token> \
 - Plain `http` is accepted only for `127.0.0.1`/`localhost`; any other host needs `https` and a token. Redirects are refused, and the token never appears in output.
 - Exit status: 0 every take rendered, 1 some takes failed (rerun to retry), 2 stopped (configuration, refused request or model change).
 
-To try it without a model, run this service with `--backend fake` and point `SFX_SERVICE_URL` at it. Choosing takes and turning them into `assets/sfx/` (24 kHz, normalised, with `index.json` and attribution) is the next step of Task 6.1.
+To try it without a model, run this service with `--backend fake` and point `SFX_SERVICE_URL` at it.
+
+Then choose takes and build the library:
+
+1. Listen in `sfx-candidates/index.html` and put the chosen take number for each cue in `assets/sfx/picks.json` (`null` leaves a cue out for now).
+2. From the repo root, with ffmpeg installed: `pnpm --filter @midnight-radio/mix sfx:assemble` (add `--candidates <dir>` for another folder).
+
+It checks each pick is the take recorded for the current prompt and seed and that the file is unchanged, converts it to 24 kHz mono 16-bit, crossfades a bed's tail into its head so it loops without a seam, gives discrete sounds 5 ms and 30 ms edge fades, normalises the peak to −1 dBFS, and checks the length, peak, edges and loop point. It writes `assets/sfx/foley/` and `assets/sfx/beds/`, `assets/sfx/index.json` (sounds it did not make, music cues and edited titles are kept) and the sound section of `ATTRIBUTION.md`, and lists any sudden jumps worth a listen. The candidates folder keeps the original takes as masters. Running it again gives identical files.
