@@ -2,6 +2,7 @@ export * from "./adaptation.js";
 export * from "./cast.js";
 export * from "./cast-edit.js";
 export * from "./normalise.js";
+export * from "./quotes.js";
 export * from "./schema.js";
 export * from "./sfx.js";
 export * from "./verbatim.js";
