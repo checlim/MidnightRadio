@@ -100,6 +100,7 @@ export async function adaptChapter(opts: AdaptOptions): Promise<AdaptResult> {
     episodeNumber: opts.input.episodeNumber,
     seriesTitle: SERIES_TITLE,
     chapterTitle: opts.input.chapter.title,
+    chapterText: opts.input.chapter.canonicalText,
   });
   const meta = { providerId: opts.provider.id, requestId: response.requestId };
   return checked.ok ? { ok: true, script: checked.script, ...meta } : { ok: false, issues: checked.issues, ...meta };

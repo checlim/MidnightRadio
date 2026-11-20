@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SceneSchema, ScriptSchema, SegmentSchema, type Script, type Segment } from "./schema.js";
+import { checkVerbatimQuotes } from "./verbatim.js";
 
 /**
  * What the adapter model writes, and the rules a Script must meet beyond its schema (Task 7.2,
@@ -30,6 +31,8 @@ export interface EpisodeInfo {
   seriesTitle: string;
   /** Shown in the cold open; not checked word for word, since the announcer may say it naturally. */
   chapterTitle: string;
+  /** The chapter's `canonical_text`. When given, segments marked as verbatim quotes are checked against it (Task 7.3). */
+  chapterText?: string | undefined;
 }
 
 /** A rule the reply broke, with where (e.g. `scenes[2].segments[4]`) and a message fit to send back to the model. */
@@ -100,7 +103,7 @@ export function checkAdaptationReply(text: string, episode: EpisodeInfo): Adapta
   if (!reply.success) return { ok: false, issues: zodIssues(reply.error) };
   const script = completeScript(reply.data, episode);
   if (!script.success) return { ok: false, issues: zodIssues(script.error) };
-  const rules = checkAdaptationRules(script.data, episode);
+  const rules = [...checkAdaptationRules(script.data, episode), ...(episode.chapterText !== undefined ? checkVerbatimQuotes(script.data, episode.chapterText) : [])];
   return rules.length > 0 ? { ok: false, issues: rules } : { ok: true, script: script.data };
 }
 

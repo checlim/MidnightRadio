@@ -63,6 +63,13 @@ describe("adaptChapter", () => {
     expect(await run(new StubLlmProvider(() => JSON.stringify({ ...GOOD, episodeNumber: 9 })))).toMatchObject({ ok: false });
   });
 
+  it("checks the uncertain-speaker fallback against the chapter text (Task 7.3)", async () => {
+    const withQuote = (text: string) => ({ ...GOOD, scenes: [{ id: "castle", segments: [{ kind: "narration", text: "A voice greets him." }, { kind: "narration", containsVerbatimQuote: true, text }] }] });
+    expect((await run(new StubLlmProvider(() => JSON.stringify(withQuote("Welcome to my house!"))))).ok).toBe(true);
+    const bad = await run(new StubLlmProvider(() => JSON.stringify(withQuote("Jonathan Harker reached the castle."))));
+    expect(bad).toMatchObject({ ok: false, issues: [{ path: "scenes[0].segments[1]", message: expect.stringContaining("not a whole quotation") }] });
+  });
+
   it("sends earlier problems back as feedback after the chapter", async () => {
     const provider = new StubLlmProvider(() => JSON.stringify(GOOD));
     await run(provider, { feedback: [{ path: "scenes[0].segments[3]", message: "narration has 40 words; condense it" }] });
