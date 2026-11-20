@@ -1,0 +1,103 @@
+{
+  "version": "musicpick-1",
+  "cues": [
+    {
+      "cue": "theme",
+      "picked": {
+        "file": "lisboa-horror-overture.mp3",
+        "startS": 13.1,
+        "durationS": 20,
+        "score": 86.5
+      },
+      "candidates": [
+        {
+          "file": "lisboa-horror-overture.mp3",
+          "rejected": null,
+          "best": {
+            "startS": 13.1,
+            "durationS": 20,
+            "meanRelDb": -5.24,
+            "spreadDb": 1.51,
+            "startPenaltyDb": 0,
+            "rejected": null,
+            "score": 86.5
+          }
+        }
+      ]
+    },
+    {
+      "cue": "sting",
+      "picked": {
+        "file": "organ-riff-dead.wav",
+        "startS": 0,
+        "durationS": 1.5,
+        "score": 96.44
+      },
+      "candidates": [
+        {
+          "file": "organ-riff-large-room.wav",
+          "rejected": null,
+          "best": {
+            "startS": 0,
+            "durationS": 2,
+            "meanRelDb": -3.48,
+            "spreadDb": 5.46,
+            "startPenaltyDb": 0.84,
+            "rejected": null,
+            "score": 79.61
+          }
+        },
+        {
+          "file": "organ-riff-dead.wav",
+          "rejected": null,
+          "best": {
+            "startS": 0,
+            "durationS": 1.5,
+            "meanRelDb": -1.13,
+            "spreadDb": 0.49,
+            "startPenaltyDb": 0.11,
+            "rejected": null,
+            "score": 96.44
+          }
+        }
+      ]
+    },
+    {
+      "cue": "transition",
+      "picked": {
+        "file": "bach-wtc2-fugue2.wav",
+        "startS": 4.2,
+        "durationS": 5,
+        "score": 87.44
+      },
+      "candidates": [
+        {
+          "file": "organ-riff-cathedral.wav",
+          "rejected": null,
+          "best": {
+            "startS": 0.1,
+            "durationS": 5,
+            "meanRelDb": -10.36,
+            "spreadDb": 7.78,
+            "startPenaltyDb": 0,
+            "rejected": null,
+            "score": 63.72
+          }
+        },
+        {
+          "file": "bach-wtc2-fugue2.wav",
+          "rejected": null,
+          "best": {
+            "startS": 4.2,
+            "durationS": 5,
+            "meanRelDb": -3.43,
+            "spreadDb": 2.19,
+            "startPenaltyDb": 1.31,
+            "rejected": null,
+            "score": 87.44
+          }
+        }
+      ]
+    }
+  ]
+}

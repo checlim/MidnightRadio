@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "id": "midnight-radio-sfx-c1ee561fe14f",
+  "entries": [
+    {
+      "id": "sting_organ_riff_dead",
+      "kind": "music",
+      "title": "Organ riff, dry",
+      "path": "music/sting_organ_riff_dead.wav",
+      "sha256": "9a2850f89b928141ded26561e0f4c255d860634e4156451ff101d793e6e99d49",
+      "durationMs": 1500,
+      "loopable": false,
+      "peakDb": -1,
+      "tags": [
+        "music",
+        "sting"
+      ],
+      "source": {
+        "type": "cc0",
+        "url": "https://commons.wikimedia.org/wiki/File:Organ_Riff_Dead.wav",
+        "author": "Ldo",
+        "licence": "CC0-1.0",
+        "originalSha256": "f95f99f3e6231f5afd22f1d7cd2cdb362b32c8c09cde09cdc381a10665927e01",
+        "excerpt": {
+          "startMs": 0,
+          "durationMs": 1500
+        }
+      }
+    },
+    {
+      "id": "theme_lisboa_horror_overture",
+      "kind": "music",
+      "title": "\"Horror Music\" (Overture), VST piece",
+      "path": "music/theme_lisboa_horror_overture.wav",
+      "sha256": "d12c4d92686ef25e3df0e9449207b857f7b2d13e198f2bad224236d33774b133",
+      "durationMs": 20000,
+      "loopable": false,
+      "peakDb": -1,
+      "tags": [
+        "music",
+        "theme"
+      ],
+      "source": {
+        "type": "cc0",
+        "url": "https://opengameart.org/content/horror-music",
+        "author": "Lisboa",
+        "licence": "CC0-1.0",
+        "originalSha256": "ea9c1b715712c833609a7ad7c9b69186e324323b9a4e2be97e37b33be946aeb8",
+        "excerpt": {
+          "startMs": 13100,
+          "durationMs": 20000
+        }
+      }
+    },
+    {
+      "id": "transition_bach_wtc2_fugue2",
+      "kind": "music",
+      "title": "Bach, Well-Tempered Clavier II, fugue 2 (excerpt)",
+      "path": "music/transition_bach_wtc2_fugue2.wav",
+      "sha256": "fab43d3f4845266c467d24cc793807ee61ce514fdf68d1a4c804e429e339782a",
+      "durationMs": 5000,
+      "loopable": false,
+      "peakDb": -1,
+      "tags": [
+        "music",
+        "transition"
+      ],
+      "source": {
+        "type": "cc0",
+        "url": "https://commons.wikimedia.org/wiki/File:Bach,_Vol,_II,_fugue_2.wav",
+        "author": "MBozorgmehr",
+        "licence": "CC0-1.0",
+        "originalSha256": "55e5124093f29019eeb7eb624e7f99d738ece2bc4e26d2a43f2375ad0d6fe426",
+        "excerpt": {
+          "startMs": 4200,
+          "durationMs": 5000
+        }
+      }
+    }
+  ],
+  "musicCues": {
+    "theme": "theme_lisboa_horror_overture",
+    "sting": "sting_organ_riff_dead",
+    "transition": "transition_bach_wtc2_fugue2"
+  }
+}

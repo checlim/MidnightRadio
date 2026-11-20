@@ -4,6 +4,7 @@ export * from "./envelope.js";
 export * from "./episode.js";
 export * from "./ffmpeg.js";
 export * from "./master.js";
+export * from "./music-pick.js";
 export * from "./render.js";
 export * from "./timeline.js";
 export * from "./transcript.js";

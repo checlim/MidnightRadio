@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "comment": "CC0 music the picker may use, and the cues each file may serve (decided once, by what the piece is: the only composed piece is the theme, short riffs are stings). The files themselves are downloaded to the git-ignored music-candidates/ folder and must match these hashes. The organ demonstration recordings (tutti-bombwerk.wav, bombardwerk-klangbeispiel.wav) are left out: they are mostly held chords.",
+  "items": [
+    {
+      "file": "organ-riff-cathedral.wav",
+      "title": "Organ riff with cathedral reverb",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Organ_Riff_Reverb_Cathedral_Gain%2B10.wav",
+      "author": "Ldo",
+      "licence": "CC0-1.0",
+      "licenceCheckedAt": "2026-11-20T03:22:51Z",
+      "sha256": "14148f792414d47f80a8c61d8431e08045a7e91749dded233d4987c5ccf8a8da",
+      "cues": [
+        "transition"
+      ]
+    },
+    {
+      "file": "organ-riff-large-room.wav",
+      "title": "Organ riff with large-room reverb",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Organ_Riff_Reverb_Large_Room.wav",
+      "author": "Ldo",
+      "licence": "CC0-1.0",
+      "licenceCheckedAt": "2026-11-20T03:22:51Z",
+      "sha256": "e75cec0a1655dea87f23e41f8a9200ad25a986a6e8655db2f7df84d05f96a6c0",
+      "cues": [
+        "sting"
+      ]
+    },
+    {
+      "file": "organ-riff-dead.wav",
+      "title": "Organ riff, dry",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Organ_Riff_Dead.wav",
+      "author": "Ldo",
+      "licence": "CC0-1.0",
+      "licenceCheckedAt": "2026-11-20T03:22:51Z",
+      "sha256": "f95f99f3e6231f5afd22f1d7cd2cdb362b32c8c09cde09cdc381a10665927e01",
+      "cues": [
+        "sting"
+      ]
+    },
+    {
+      "file": "bach-wtc2-fugue2.wav",
+      "title": "Bach, Well-Tempered Clavier II, fugue 2 (excerpt)",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Bach,_Vol,_II,_fugue_2.wav",
+      "author": "MBozorgmehr",
+      "licence": "CC0-1.0",
+      "licenceCheckedAt": "2026-11-20T03:22:51Z",
+      "sha256": "55e5124093f29019eeb7eb624e7f99d738ece2bc4e26d2a43f2375ad0d6fe426",
+      "cues": [
+        "transition"
+      ]
+    },
+    {
+      "file": "lisboa-horror-overture.mp3",
+      "title": "\"Horror Music\" (Overture), VST piece",
+      "sourcePage": "https://opengameart.org/content/horror-music",
+      "author": "Lisboa",
+      "licence": "CC0-1.0",
+      "licenceCheckedAt": "2026-11-20T03:22:51Z",
+      "sha256": "ea9c1b715712c833609a7ad7c9b69186e324323b9a4e2be97e37b33be946aeb8",
+      "cues": [
+        "theme"
+      ]
+    }
+  ]
+}
