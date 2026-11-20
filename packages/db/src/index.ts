@@ -3,3 +3,4 @@ export * from "./cast.js";
 export * from "./errors.js";
 export * from "./migrations.js";
 export * from "./open.js";
+export * from "./scripts.js";
