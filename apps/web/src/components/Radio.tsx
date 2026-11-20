@@ -228,7 +228,9 @@ export function Radio() {
               ) : (
                 <>
                   <p className="speaker">{current?.speaker ?? "\u00a0"}</p>
-                  <p className="line">{current ? current.text : engineState.power === "on" && !engineState.wantsPlay ? "Paused. Press Space to listen." : "\u00a0"}</p>
+                  <p className="line">{current ? current.text : "\u00a0"}</p>
+                  {/* Paused is shown whether or not a line is on screen, with how to resume. */}
+                  <p className="muted pause-hint">{engineState.power === "on" && !engineState.wantsPlay ? "Paused. Press Space to listen." : "\u00a0"}</p>
                 </>
               )}
             </>

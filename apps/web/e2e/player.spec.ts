@@ -71,6 +71,18 @@ test("tunes with the arrow keys and toggles play with Space, but never while typ
   await expect(page.getByRole("status")).toHaveText("2 matches");
 });
 
+test("says it is paused, and how to resume, even while a line is on screen", async ({ page }) => {
+  await page.getByRole("button", { name: "Power" }).click();
+  await expect(page.locator(".now-playing .line")).toHaveText("Good evening, listeners.");
+  await slider(page).focus();
+  await page.keyboard.press("Space");
+  await expect(player(page)).toHaveAttribute("data-wants-play", "false");
+  await expect(page.locator(".now-playing .line")).toHaveText("Good evening, listeners.");
+  await expect(page.getByText("Paused. Press Space to listen.")).toBeVisible();
+  await page.keyboard.press("Space");
+  await expect(page.getByText("Paused. Press Space to listen.")).toHaveCount(0);
+});
+
 test("jumps to a transcript line and highlights the line playing", async ({ page }) => {
   await page.getByRole("button", { name: "Power" }).click();
   await page.locator(".transcript button", { hasText: "Count Dracula?" }).click();
