@@ -12,6 +12,8 @@ export interface WebConfig {
   /** Must match the worker's `MIDNIGHT_STUB_PROVIDERS`, so the cast editor offers the voices the worker casts from. */
   stubProviders: boolean;
   dataDir: string;
+  /** `<dataDir>/broadcast`: published episodes and stations.json, served at `/broadcast/`. */
+  broadcastDir: string;
   /** The repository root (voice catalogue). Default: two levels up from the web app, where Next runs. */
   repoRoot: string;
   /** Operator ceiling for any one Book's speech budget (`BOOK_TTS_CHAR_LIMIT`). */
@@ -43,11 +45,14 @@ export function loadWebConfig(env: Record<string, string | undefined> = process.
   const parsed = WebEnvSchema.safeParse(env);
   if (!parsed.success) throw new Error(`invalid web configuration: ${parsed.error.issues.map((i) => `${String(i.path[0])} ${i.message}`).join("; ")}`);
   const d = parsed.data;
+  const repoRoot = d.REPO_ROOT ? resolve(cwd, d.REPO_ROOT) : resolve(cwd, "../..");
   return {
     generationEnabled: d.GENERATION_ENABLED,
     stubProviders: d.MIDNIGHT_STUB_PROVIDERS,
-    dataDir: resolve(cwd, d.DATA_DIR),
-    repoRoot: d.REPO_ROOT ? resolve(cwd, d.REPO_ROOT) : resolve(cwd, "../.."),
+    // Relative to the repository root, as the worker and the CLI take it, so all share one database.
+    dataDir: resolve(repoRoot, d.DATA_DIR),
+    repoRoot,
+    broadcastDir: resolve(repoRoot, d.DATA_DIR, "broadcast"),
     bookTtsCharCeiling: loadBudgetConfig(env).bookTtsCharCeiling,
     clientIpHeader: d.CLIENT_IP_HEADER,
   };

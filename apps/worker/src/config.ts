@@ -13,14 +13,16 @@ export interface WorkerConfig {
   generationEnabled: boolean;
   /** `MIDNIGHT_STUB_PROVIDERS=true`: generate with the offline model and tone voices (tests, trying the flow). */
   stubProviders: boolean;
-  /** Where episodes and stations.json are published (`PUBLIC_DIR`, default apps/web/public). */
-  publicDir: string;
+  /** `<dataDir>/broadcast`: published episodes and stations.json, served by the web app at `/broadcast/`. */
+  broadcastDir: string;
 }
 
 export const DB_FILE = "midnight-radio.db";
 export const RENDER_CACHE_DIR = "render-cache";
+export const BROADCAST_DIR = "broadcast";
 
-const DEFAULT_PUBLIC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../web/public");
+/** A relative DATA_DIR is taken from the repository root, as the web app and the CLI take it, so all three share one database. */
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 /** "true" or "false" (case-insensitive); unset or empty is false. Anything else is an error, so a typo cannot silently enable generation. */
 const flag = z
@@ -36,10 +38,6 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 4_000;
 const WorkerEnvSchema = z.object({
   GENERATION_ENABLED: flag,
   MIDNIGHT_STUB_PROVIDERS: flag,
-  PUBLIC_DIR: z
-    .string()
-    .optional()
-    .transform((s) => s?.trim() || DEFAULT_PUBLIC_DIR),
   DATA_DIR: z
     .string()
     .optional()
@@ -66,13 +64,13 @@ export function loadWorkerConfig(env: Record<string, string | undefined> = proce
     });
     throw new Error(`invalid worker configuration: ${problems.join("; ")}`);
   }
-  const dataDir = parsed.data.DATA_DIR;
+  const dataDir = resolve(REPO_ROOT, parsed.data.DATA_DIR);
   return {
     dataDir,
     renderCacheDir: join(dataDir, RENDER_CACHE_DIR),
     shutdownTimeoutMs: parsed.data.WORKER_SHUTDOWN_TIMEOUT_MS,
     generationEnabled: parsed.data.GENERATION_ENABLED,
     stubProviders: parsed.data.MIDNIGHT_STUB_PROVIDERS,
-    publicDir: resolve(parsed.data.PUBLIC_DIR),
+    broadcastDir: join(dataDir, BROADCAST_DIR),
   };
 }

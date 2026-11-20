@@ -30,7 +30,7 @@ export function createGenerationServices(env: Record<string, string | undefined>
   const sfx = SfxCatalogueSchema.parse(JSON.parse(readFileSync(join(sfxDir, "index.json"), "utf8")));
   if (!sfx.musicCues.theme) throw new Error("the sound library has no theme music pinned; run pnpm --filter @midnight-radio/mix sfx:music");
   const styleGuide = loadStyleGuide(join(root, ".kiro/steering/radio-voice.md"));
-  const common = { sfx, sfxDir, styleGuide, cacheDir: config.renderCacheDir, publicDir: config.publicDir, uploadsDir: join(config.dataDir, "uploads"), log };
+  const common = { sfx, sfxDir, styleGuide, cacheDir: config.renderCacheDir, broadcastDir: config.broadcastDir, uploadsDir: join(config.dataDir, "uploads"), log };
 
   if (config.stubProviders) {
     const tts = new StubProvider();

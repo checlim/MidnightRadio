@@ -39,12 +39,17 @@ export function Radio() {
   // Stations: fetched and validated, never trusted as-is.
   useEffect(() => {
     let live = true;
-    fetch("/stations.json", { cache: "no-cache" })
+    fetch("/broadcast/stations.json", { cache: "no-cache" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`stations: HTTP ${r.status}`))))
       .then((json: unknown) => {
         const parsed = StationListSchema.safeParse(json);
         if (!live) return;
-        if (parsed.success) setLoad({ kind: "ready", stations: parsed.data.stations });
+        if (parsed.success) {
+          setLoad({ kind: "ready", stations: parsed.data.stations });
+          // Start the needle on the first station, wherever the dial places it (a lone station sits mid-dial).
+          const first = stationPositions(parsed.data.stations.length)[0];
+          if (first !== undefined) setPosition(first);
+        }
         else setLoad({ kind: "error", message: "The station list could not be read." });
       })
       .catch(() => live && setLoad({ kind: "error", message: "The station list could not be loaded." }));

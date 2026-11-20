@@ -1,12 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DEMO_DATA, FIXTURES, STUDIO_DATA } from "./paths";
 
 /** Test media, made with ffmpeg: two 8 s MP3s (clean and AM) and a transcript with four lines. */
-export const FIXTURES = join(import.meta.dirname, ".fixtures");
+export { FIXTURES };
 
 export default function globalSetup() {
   mkdirSync(FIXTURES, { recursive: true });
+  // Every run starts with an empty radio and an empty studio.
+  for (const dir of [DEMO_DATA, STUDIO_DATA]) {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+  }
   const tone = (name: string, freq: number) =>
     execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", `sine=f=${freq}:r=44100:d=8`, "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", join(FIXTURES, name)]);
   tone("clean.mp3", 440);

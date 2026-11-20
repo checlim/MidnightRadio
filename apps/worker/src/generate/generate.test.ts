@@ -137,7 +137,7 @@ describe("cast and lines", () => {
 });
 
 describe("stations", () => {
-  const st = (id: string, title = id): Station => ({ status: "ready", id, book: "B", author: "A", episodeNumber: 1, title, durationMs: 1000, cleanUrl: `/episodes/${id}/episode.mp3`, amUrl: `/episodes/${id}/episode-am.mp3`, vttUrl: `/episodes/${id}/episode.vtt` });
+  const st = (id: string, title = id): Station => ({ status: "ready", id, book: "B", author: "A", episodeNumber: 1, title, durationMs: 1000, cleanUrl: `/broadcast/episodes/${id}/episode.mp3`, amUrl: `/episodes/${id}/episode-am.mp3`, vttUrl: `/episodes/${id}/episode.vtt` });
 
   it("replaces by id in place, keeps others, appends new ones", () => {
     expect(mergeStations([st("a"), st("b")], [st("b", "new"), st("c")]).map((s) => [s.id, s.title])).toEqual([
@@ -260,7 +260,7 @@ describe.skipIf(!hasFfmpeg)("generateBook end to end (stub model, stub voices, r
     const sfx: SfxCatalogue = { version: 1, id: "lib", entries: [{ id: "theme_x", kind: "music", title: "Theme", path: "music/theme.wav", sha256: "a".repeat(64), durationMs: 2000, loopable: false, peakDb: -1, tags: [], source: { type: "project", author: "x", licence: "CC0-1.0" } }], musicCues: { theme: "theme_x" } };
     tts = new StubProvider();
     logs.length = 0;
-    deps = { db, ledger: new BudgetLedger(db, BUDGET), llm: model(), tts, voices: STUB_VOICE_CATALOGUE, sfx, sfxDir, styleGuide: "# Style", cacheDir: join(dir, "cache"), publicDir: join(dir, "public"), log: (m) => logs.push(m), ff: { log: () => {} }, delay: async () => undefined };
+    deps = { db, ledger: new BudgetLedger(db, BUDGET), llm: model(), tts, voices: STUB_VOICE_CATALOGUE, sfx, sfxDir, styleGuide: "# Style", cacheDir: join(dir, "cache"), broadcastDir: join(dir, "public"), log: (m) => logs.push(m), ff: { log: () => {} }, delay: async () => undefined };
   });
   afterEach(async () => {
     db.close();
@@ -277,7 +277,7 @@ describe.skipIf(!hasFfmpeg)("generateBook end to end (stub model, stub voices, r
     expect(first).toEqual([{ stationId: p.episodes[0]!.stationId, episodeNumber: 1, title: "The Door", status: "ready", durationMs: expect.any(Number), reused: false }]);
     const id = p.episodes[0]!.stationId;
     for (const f of ["episode.mp3", "episode-am.mp3", "episode.vtt"]) expect(existsSync(join(dir, "public/episodes", id, f))).toBe(true);
-    expect(await stations()).toEqual([expect.objectContaining({ status: "ready", id, book: "Test Gothic", author: "A. Writer", episodeNumber: 1, title: "The Door", cleanUrl: `/episodes/${id}/episode.mp3` })]);
+    expect(await stations()).toEqual([expect.objectContaining({ status: "ready", id, book: "Test Gothic", author: "A. Writer", episodeNumber: 1, title: "The Door", cleanUrl: `/broadcast/episodes/${id}/episode.mp3` })]);
     expect(await readFile(join(dir, "public/episodes", id, "episode.vtt"), "utf8")).toContain("Welcome to my house!");
     const cast = loadCast(db, p.bookId)!;
     expect(cast.characters.map((c) => [c.name, c.firstChapterIdx])).toEqual(expect.arrayContaining([["Count Dracula", 0], ["Mina Harker", 1]]));

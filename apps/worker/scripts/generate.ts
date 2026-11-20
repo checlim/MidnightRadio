@@ -7,7 +7,7 @@
  * model, daily caps, the voice catalogue, Qwen3-TTS on LOCAL_AUDIO_URL, the sound library with a
  * pinned theme, ffmpeg) and stops with a list of what to fix before any paid call. Then casts the
  * whole book once, adapts each chosen chapter (with repair), renders its speech, mixes it and
- * publishes it to apps/web/public/episodes/ and stations.json. Run it again to resume: the Cast,
+ * publishes it to <DATA_DIR>/broadcast/ (episodes and stations.json, served at /broadcast/). Run it again to resume: the Cast,
  * valid Scripts, rendered lines and finished episodes are kept in DATA_DIR.
  *
  * --list prints the chapters and their numbers and exits (no checks, nothing written).
@@ -20,7 +20,7 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { BudgetLedger, openDb } from "@midnight-radio/db";
 import { IngestError, ingestEpub } from "@midnight-radio/ingest";
-import { DB_FILE, RENDER_CACHE_DIR } from "../src/config.js";
+import { BROADCAST_DIR, DB_FILE, RENDER_CACHE_DIR } from "../src/config.js";
 import { BudgetStopError, GenerateError, generateBook, needsLlm } from "../src/generate/pipeline.js";
 import { planBook, selectChapters } from "../src/generate/plan.js";
 import { preflight } from "../src/generate/preflight.js";
@@ -81,7 +81,7 @@ try {
     sfxDir: join(root, "assets/sfx"),
     styleGuide: ready.styleGuide,
     cacheDir: join(dataDir, RENDER_CACHE_DIR),
-    publicDir: join(root, "apps/web/public"),
+    broadcastDir: join(dataDir, BROADCAST_DIR),
     log: (m) => console.log(m),
   });
   const failed = results.filter((r) => r.status === "failed");

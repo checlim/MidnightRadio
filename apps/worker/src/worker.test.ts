@@ -30,8 +30,10 @@ const captureLog = () => {
 
 describe("loadWorkerConfig", () => {
   it("defaults to /data and a shutdown timeout under common platform kill timeouts", () => {
-    expect(loadWorkerConfig({})).toEqual({ dataDir: "/data", renderCacheDir: "/data/render-cache", shutdownTimeoutMs: 4_000, generationEnabled: false, stubProviders: false, publicDir: expect.stringMatching(/apps\/web\/public$/) });
-    expect(loadWorkerConfig({ DATA_DIR: " /tmp/x ", WORKER_SHUTDOWN_TIMEOUT_MS: "2500", GENERATION_ENABLED: "TRUE", PUBLIC_DIR: "/tmp/pub" })).toMatchObject({ dataDir: "/tmp/x", renderCacheDir: "/tmp/x/render-cache", shutdownTimeoutMs: 2_500, generationEnabled: true, publicDir: "/tmp/pub" });
+    expect(loadWorkerConfig({})).toEqual({ dataDir: "/data", renderCacheDir: "/data/render-cache", shutdownTimeoutMs: 4_000, generationEnabled: false, stubProviders: false, broadcastDir: "/data/broadcast" });
+    expect(loadWorkerConfig({ DATA_DIR: " /tmp/x ", WORKER_SHUTDOWN_TIMEOUT_MS: "2500", GENERATION_ENABLED: "TRUE" })).toMatchObject({ dataDir: "/tmp/x", renderCacheDir: "/tmp/x/render-cache", shutdownTimeoutMs: 2_500, generationEnabled: true, broadcastDir: "/tmp/x/broadcast" });
+    expect(loadWorkerConfig({ DATA_DIR: "./data" }).dataDir).toMatch(/midnight radio\/data$|\/data$/); // relative: from the repository root
+    expect(loadWorkerConfig({ DATA_DIR: "./data" }).dataDir).not.toContain("apps/worker");
     expect(() => loadWorkerConfig({ GENERATION_ENABLED: "yes" })).toThrow('invalid worker configuration: GENERATION_ENABLED must be "true" or "false"');
   });
 

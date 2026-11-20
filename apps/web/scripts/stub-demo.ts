@@ -1,13 +1,14 @@
 /**
  * Development stations for the player, made offline with the StubProvider (test tones, no model,
  * no key): two short episodes through the real render cache and mixer, and one station that is
- * still "warming up". Writes apps/web/public/episodes/ and apps/web/public/stations.json, both
- * git-ignored; the real demo bundle (Task 12) replaces them.
+ * still "warming up". Writes episodes/ and stations.json into <DATA_DIR>/broadcast (served at
+ * /broadcast/; DATA_DIR from the environment or the repo's .env); the real demo bundle (Task 12) replaces them.
  *
  *   pnpm --filter @midnight-radio/web demo:stub
  *
  * Lines are verbatim from the public-domain texts. Needs ffmpeg.
  */
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -15,9 +16,11 @@ import { fileURLToPath } from "node:url";
 import type { Script, SfxCatalogue } from "@midnight-radio/core";
 import { mixEpisode, segmentsInOrder, type AudioFile } from "@midnight-radio/mix";
 import { RenderCache, StubProvider, encodeWav, renderSegments } from "@midnight-radio/tts";
+import { loadWebConfig } from "../src/server/config";
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const pub = join(web, "public");
+if (existsSync(join(web, "../../.env"))) process.loadEnvFile(join(web, "../../.env"));
+const pub = loadWebConfig(process.env, web).broadcastDir;
 const RATE = 24_000;
 
 const dracula: Script = {
@@ -113,12 +116,12 @@ async function main() {
       const episodeWork = join(work, id);
       await mkdir(episodeWork);
       const out = await mixEpisode({ script, speech, sfx, sfxDir, workDir: episodeWork, outDir, tags: { title: `Episode ${script.episodeNumber}: ${title}`, album: "Midnight Radio", artist: author, track: script.episodeNumber, aiDisclosure: "AI-generated stub demo: test tones, not real voices." } });
-      stations.push({ status: "ready", id, book, author, episodeNumber: script.episodeNumber, title, durationMs: out.clean.durationMs, cleanUrl: `/episodes/${id}/episode.mp3`, amUrl: `/episodes/${id}/episode-am.mp3`, vttUrl: `/episodes/${id}/episode.vtt` });
+      stations.push({ status: "ready", id, book, author, episodeNumber: script.episodeNumber, title, durationMs: out.clean.durationMs, cleanUrl: `/broadcast/episodes/${id}/episode.mp3`, amUrl: `/broadcast/episodes/${id}/episode-am.mp3`, vttUrl: `/broadcast/episodes/${id}/episode.vtt` });
       console.log(`${id}: ${(out.clean.durationMs / 1000).toFixed(1)} s, clean ${out.clean.integratedLufs} LUFS, AM ${out.am.integratedLufs} LUFS`);
     }
     stations.push({ status: "warming", id: "dracula-3", book: "Dracula", author: "Bram Stoker", episodeNumber: 3, title: "Jonathan Harker\u2019s Journal (continued)", rendered: 47, total: 132 });
     await writeFile(join(pub, "stations.json"), `${JSON.stringify({ stations }, null, 2)}\n`);
-    console.log(`wrote ${stations.length} stations to public/stations.json`);
+    console.log(`wrote ${stations.length} stations to ${join(pub, "stations.json")}`);
   } finally {
     await rm(work, { recursive: true, force: true });
   }

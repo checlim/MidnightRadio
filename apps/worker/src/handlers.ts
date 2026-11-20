@@ -34,7 +34,7 @@ export interface GenerationServices {
   sfxDir: string;
   styleGuide: string;
   cacheDir: string;
-  publicDir: string;
+  broadcastDir: string;
   /** Uploaded EPUBs, one per Book: `<uploadsDir>/<bookId>.epub`. */
   uploadsDir: string;
   log: (message: string, fields?: LogFields) => void;
@@ -79,7 +79,7 @@ function episodeHandler(deps: HandlerDeps, services: GenerationServices): JobHan
       sfxDir: services.sfxDir,
       styleGuide: services.styleGuide,
       cacheDir: services.cacheDir,
-      publicDir: services.publicDir,
+      broadcastDir: services.broadcastDir,
       log: (m: string) => services.log(m, { jobId: ctx.job.id, chapterId: ctx.job.refId }),
       jobId: ctx.job.id,
       fence: ctx.assertLease,

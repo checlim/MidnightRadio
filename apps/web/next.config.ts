@@ -1,4 +1,10 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import type { NextConfig } from "next";
+
+// The repo's .env (DATA_DIR, GENERATION_ENABLED, …) for local runs; values already set win.
+const rootEnv = resolve(process.cwd(), "../../.env");
+if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
 
 /**
  * The web app (Req 7). Security headers apply to every response: no framing, no sniffing, a

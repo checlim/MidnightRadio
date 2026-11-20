@@ -50,8 +50,8 @@ export interface GenerateDeps {
   styleGuide: string;
   /** Speech render cache folder. */
   cacheDir: string;
-  /** `apps/web/public`: episodes/<station>/ and stations.json go here. */
-  publicDir: string;
+  /** `<DATA_DIR>/broadcast`: episodes/<station>/ and stations.json go here; the web app serves it at `/broadcast/`. */
+  broadcastDir: string;
   log: (message: string) => void;
   ff?: FfmpegOptions;
   /** Back-off between LLM retries (tests pass a no-op). */
@@ -138,10 +138,10 @@ export function needsLlm(db: DatabaseSync, plan: BookPlan, opts: GenerateOptions
   return selected(plan, opts).some((e) => !loadValidScript(db, e.chapterId));
 }
 
-function finishedEpisode(db: DatabaseSync, chapterId: string, publicDir: string, stationId: string): { durationMs: number } | null {
+function finishedEpisode(db: DatabaseSync, chapterId: string, broadcastDir: string, stationId: string): { durationMs: number } | null {
   const row = db.prepare("SELECT duration_ms AS durationMs, stale FROM episodes WHERE chapter_id = ?").get(chapterId) as { durationMs: number; stale: number } | undefined;
   if (!row || row.stale !== 0) return null;
-  const dir = join(publicDir, "episodes", stationId);
+  const dir = join(broadcastDir, "episodes", stationId);
   return ["episode.mp3", "episode-am.mp3", "episode.vtt"].every((f) => existsSync(join(dir, f))) ? { durationMs: Number(row.durationMs) } : null;
 }
 
@@ -290,7 +290,7 @@ async function renderAndMix(plan: BookPlan, e: PlannedEpisode, script: Script, s
   if (failed.length > 0) return { failed: `${failed.length} line(s) failed to render (first: ${failed[0]!.status === "failed" ? failed[0]!.error.message : ""}); run again to retry` };
   const speech = new Map<string, AudioFile>(outcomes.flatMap((o) => (o.status === "failed" ? [] : [[o.id, { path: o.result.path, frames: o.result.info.frames }] as const])));
 
-  const outDir = join(deps.publicDir, "episodes", e.stationId);
+  const outDir = join(deps.broadcastDir, "episodes", e.stationId);
   await mkdir(outDir, { recursive: true });
   const workDir = await mkdtemp(join(tmpdir(), "mr-mix-"));
   try {
@@ -335,7 +335,7 @@ async function renderAndMix(plan: BookPlan, e: PlannedEpisode, script: Script, s
  */
 export async function produceEpisode(plan: BookPlan, e: PlannedEpisode, cast: StoredCast, deps: GenerateDeps): Promise<EpisodeResult> {
   const base = { stationId: e.stationId, episodeNumber: e.episodeNumber, title: e.title };
-  const finished = finishedEpisode(deps.db, e.chapterId, deps.publicDir, e.stationId);
+  const finished = finishedEpisode(deps.db, e.chapterId, deps.broadcastDir, e.stationId);
   let result: EpisodeResult;
   if (finished) {
     result = { ...base, status: "ready", durationMs: finished.durationMs, reused: true };
@@ -353,12 +353,12 @@ export async function produceEpisode(plan: BookPlan, e: PlannedEpisode, cast: St
       episodeNumber: e.episodeNumber,
       title: e.title.slice(0, 200),
       durationMs: result.durationMs,
-      cleanUrl: `/episodes/${e.stationId}/episode.mp3`,
-      amUrl: `/episodes/${e.stationId}/episode-am.mp3`,
-      vttUrl: `/episodes/${e.stationId}/episode.vtt`,
+      cleanUrl: `/broadcast/episodes/${e.stationId}/episode.mp3`,
+      amUrl: `/broadcast/episodes/${e.stationId}/episode-am.mp3`,
+      vttUrl: `/broadcast/episodes/${e.stationId}/episode.vtt`,
     };
-    const stationsPath = join(deps.publicDir, "stations.json");
-    await mkdir(deps.publicDir, { recursive: true });
+    const stationsPath = join(deps.broadcastDir, "stations.json");
+    await mkdir(deps.broadcastDir, { recursive: true });
     deps.fence?.();
     await writeStations(stationsPath, mergeStations(await readStations(stationsPath), [station]));
     deps.log(`episode ${e.episodeNumber}: ${result.reused ? "already on air" : "on air"} as ${e.stationId} (${(result.durationMs / 60_000).toFixed(1)} min)`);
