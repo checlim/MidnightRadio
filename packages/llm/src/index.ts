@@ -1,3 +1,4 @@
+export * from "./adapt-prompt.js";
 export * from "./casting.js";
 export * from "./openai-compatible.js";
 export * from "./provider.js";
