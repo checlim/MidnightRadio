@@ -164,7 +164,7 @@ describe("buildCast", () => {
       ["character", "Count Dracula", "stub-m2"],
       ["character", "The landlady", null],
     ]);
-    expect(members[2]).toEqual({ name: "Count Dracula", role: "character", aliases: ["Dracula"], genderPresentation: "masculine", ageBand: "older", description: "A courteous old nobleman.", voiceId: "stub-m2", voiceFit: "good", mentionCount: 210, speaks: true });
+    expect(members[2]).toEqual({ name: "Count Dracula", role: "character", aliases: ["Dracula"], genderPresentation: "masculine", ageBand: "older", description: "A courteous old nobleman.", voiceId: "stub-m2", voiceFit: "good", mentionCount: 210, speaks: true, firstChapterIdx: 0 });
   });
 
   it("pauses (and builds nothing) when voices run out", () => {

@@ -204,6 +204,15 @@ ALTER TABLE episodes ADD COLUMN stale INTEGER NOT NULL DEFAULT 0 CHECK (stale IN
 CREATE INDEX segments_speaker ON segments(speaker) WHERE speaker IS NOT NULL;
 `,
   },
+  {
+    version: 5,
+    name: "cast: chapter where each character first appears",
+    sql: /* sql */ `
+-- 0-based chapter index where casting first saw the character. The adaptation prompt shows a
+-- character's description only from that chapter on, so it cannot leak a later reveal.
+ALTER TABLE cast_members ADD COLUMN first_chapter_idx INTEGER CHECK (first_chapter_idx IS NULL OR first_chapter_idx >= 0);
+`,
+  },
 ];
 
 /**

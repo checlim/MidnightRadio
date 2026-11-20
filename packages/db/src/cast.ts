@@ -21,6 +21,8 @@ export interface CastMember {
   voiceFit: VoiceFitLevel | null;
   mentionCount: number;
   speaks: boolean;
+  /** 0-based chapter where casting first saw the character; absent for the Announcer and Narrator. */
+  firstChapterIdx?: number | null;
 }
 
 export interface CastPin {
@@ -74,11 +76,11 @@ export function writeCast(db: DatabaseSync, bookId: string, pin: CastPin, member
   if (book.hash !== null) throw new CastFrozenError(bookId);
 
   const insert = db.prepare(
-    `INSERT INTO cast_members (id, book_id, name, aliases_json, role, gender_hint, age_band, voice_id, description, mention_count, speaks, voice_fit)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO cast_members (id, book_id, name, aliases_json, role, gender_hint, age_band, voice_id, description, mention_count, speaks, voice_fit, first_chapter_idx)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const m of members) {
-    insert.run(newId(), bookId, m.name, JSON.stringify(m.aliases), m.role, m.genderPresentation, m.ageBand, m.voiceId, m.description, m.mentionCount, m.speaks ? 1 : 0, m.voiceFit);
+    insert.run(newId(), bookId, m.name, JSON.stringify(m.aliases), m.role, m.genderPresentation, m.ageBand, m.voiceId, m.description, m.mentionCount, m.speaks ? 1 : 0, m.voiceFit, m.firstChapterIdx ?? null);
   }
   db.prepare("UPDATE books SET voice_catalogue_id = ?, voice_catalogue_hash = ? WHERE id = ?").run(pin.catalogueId, pin.catalogueHash, bookId);
 }
@@ -106,6 +108,7 @@ interface Row {
   voice_fit: VoiceFitLevel | null;
   mention_count: number;
   speaks: number;
+  first_chapter_idx: number | null;
 }
 
 /** The Book's frozen Cast, or undefined if it has none yet. */
@@ -114,7 +117,7 @@ export function loadCast(db: DatabaseSync, bookId: string): StoredCast | undefin
   if (!book || book.hash === null || book.id === null) return undefined;
   const rows = db
     .prepare(
-      `SELECT name, role, aliases_json, gender_hint, age_band, description, voice_id, voice_fit, mention_count, speaks
+      `SELECT name, role, aliases_json, gender_hint, age_band, description, voice_id, voice_fit, mention_count, speaks, first_chapter_idx
        FROM cast_members WHERE book_id = ? ORDER BY mention_count DESC, name COLLATE BINARY, rowid`,
     )
     .all(bookId) as unknown as Row[];
@@ -130,6 +133,7 @@ export function loadCast(db: DatabaseSync, bookId: string): StoredCast | undefin
       voiceFit: r.voice_fit,
       mentionCount: Number(r.mention_count),
       speaks: r.speaks === 1,
+      ...(r.first_chapter_idx !== null ? { firstChapterIdx: Number(r.first_chapter_idx) } : {}),
     }),
   );
   return {
@@ -206,12 +210,12 @@ export function writeCastAdditions(
     if (chapter?.bookId !== bookId) throw new Error(`chapter ${addedInChapterId} is not part of book ${bookId}`);
   }
   const insert = db.prepare(
-    `INSERT INTO cast_members (id, book_id, name, aliases_json, role, gender_hint, age_band, voice_id, description, mention_count, speaks, voice_fit, added_in_chapter)
-     VALUES (?, ?, ?, ?, 'character', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO cast_members (id, book_id, name, aliases_json, role, gender_hint, age_band, voice_id, description, mention_count, speaks, voice_fit, added_in_chapter, first_chapter_idx)
+     VALUES (?, ?, ?, ?, 'character', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const m of additions) {
     try {
-      insert.run(newId(), bookId, m.name, JSON.stringify(m.aliases), m.genderPresentation, m.ageBand, m.voiceId, m.description, m.mentionCount, m.speaks ? 1 : 0, m.voiceFit, addedInChapterId);
+      insert.run(newId(), bookId, m.name, JSON.stringify(m.aliases), m.genderPresentation, m.ageBand, m.voiceId, m.description, m.mentionCount, m.speaks ? 1 : 0, m.voiceFit, addedInChapterId, m.firstChapterIdx ?? null);
     } catch (err) {
       if (isUniqueViolation(err)) throw new CastConflictError(`"${m.name}" or their voice is already in the Cast.`);
       throw err;

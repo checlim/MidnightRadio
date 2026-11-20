@@ -23,7 +23,7 @@ const reserved = (): CastMember[] => [
 ];
 const full = (): CastMember[] => [
   ...reserved(),
-  member("Count Dracula", { aliases: ["Dracula", "the Count"], genderPresentation: "masculine", ageBand: "older", voiceId: "stub-m2", voiceFit: "good", mentionCount: 210, speaks: true }),
+  member("Count Dracula", { aliases: ["Dracula", "the Count"], genderPresentation: "masculine", ageBand: "older", voiceId: "stub-m2", voiceFit: "good", mentionCount: 210, speaks: true, firstChapterIdx: 1 }),
   member("Mina Harker", { genderPresentation: "feminine", voiceId: "stub-f1", voiceFit: "good", mentionCount: 306, speaks: true }),
   member("The landlady", { genderPresentation: "feminine", mentionCount: 2 }),
 ];
@@ -54,6 +54,7 @@ describe("saveCast / loadCast", () => {
     expect(cast.characters.map((c) => c.name)).toEqual(["Mina Harker", "Count Dracula", "The landlady"]);
     expect(cast.characters[1]).toEqual(full()[2]); // lossless round trip, aliases included
     expect(cast.characters[2]).toMatchObject({ voiceId: null, voiceFit: null, speaks: false });
+    expect(cast.announcer).not.toHaveProperty("firstChapterIdx"); // none stored, none read back
   });
 
   it("freezes the Cast: a second save is refused and changes nothing (Req 2.3)", () => {

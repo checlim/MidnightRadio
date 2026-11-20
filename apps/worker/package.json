@@ -7,11 +7,16 @@
   "scripts": {
     "start": "node --import tsx src/main.ts",
     "typecheck": "tsc -p .",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "generate": "tsx scripts/generate.ts"
   },
   "dependencies": {
+    "@midnight-radio/core": "workspace:*",
     "@midnight-radio/db": "workspace:*",
-    "zod": "^4.6.7",
-    "@midnight-radio/tts": "workspace:*"
+    "@midnight-radio/ingest": "workspace:*",
+    "@midnight-radio/llm": "workspace:*",
+    "@midnight-radio/mix": "workspace:*",
+    "@midnight-radio/tts": "workspace:*",
+    "zod": "^4.6.7"
   }
 }

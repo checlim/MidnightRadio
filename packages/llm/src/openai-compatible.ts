@@ -40,6 +40,42 @@ export function loadLlmConfig(env: Record<string, string | undefined> = process.
   return { baseUrl: LLM_BASE_URL.replace(/\/+$/, ""), apiKey: LLM_API_KEY, model: LLM_MODEL, timeoutMs: LLM_TIMEOUT_MS };
 }
 
+export interface LlmAccess {
+  /** Whether the endpoint's model list names `config.model`; null when it publishes no list. */
+  modelListed: boolean | null;
+}
+
+const ModelsSchema = z.object({ data: z.array(z.object({ id: z.string() }).passthrough()) });
+
+/**
+ * Check the key and endpoint without spending tokens: `GET {baseUrl}/models`. Resolves when the
+ * key is accepted (or the endpoint has no model list); throws LlmError with a message naming the
+ * setting to fix otherwise. Never includes the key in a message.
+ */
+export async function checkLlmAccess(config: OpenAiCompatibleConfig, fetchImpl: typeof fetch = fetch): Promise<LlmAccess> {
+  let res: Response;
+  try {
+    res = await fetchImpl(`${config.baseUrl}/models`, { headers: { authorization: `Bearer ${config.apiKey}` }, signal: AbortSignal.timeout(Math.min(config.timeoutMs, 15_000)) });
+  } catch {
+    throw new LlmError(`cannot reach the LLM endpoint at LLM_BASE_URL (${config.baseUrl})`, false, true);
+  }
+  if (res.status === 401 || res.status === 403) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new LlmError(`the LLM endpoint refused LLM_API_KEY (HTTP ${res.status})`, false, false, res.status);
+  }
+  if (res.status === 404 || res.status === 405) {
+    await res.body?.cancel().catch(() => undefined);
+    return { modelListed: null };
+  }
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new LlmError(`the LLM endpoint at LLM_BASE_URL failed (HTTP ${res.status})`, false, RETRYABLE.has(res.status), res.status);
+  }
+  const list = ModelsSchema.safeParse(await res.json().catch(() => null));
+  if (!list.success) return { modelListed: null };
+  return { modelListed: list.data.data.some((m) => m.id === config.model) };
+}
+
 const ResponseSchema = z.object({
   id: z.string().optional(),
   choices: z.array(z.object({ message: z.object({ content: z.string().nullable().optional(), refusal: z.string().nullable().optional() }), finish_reason: z.string().nullable().optional() })).min(1),

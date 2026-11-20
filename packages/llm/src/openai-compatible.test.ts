@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createOpenAiCompatibleProvider, loadLlmConfig } from "./openai-compatible.js";
+import { checkLlmAccess, createOpenAiCompatibleProvider, loadLlmConfig } from "./openai-compatible.js";
 import { LlmError, type LlmRequest } from "./provider.js";
 
 const KEY = "sk-test-SECRET-123";
@@ -108,5 +108,37 @@ describe("OpenAI-compatible provider", () => {
       const e = await failure(impl as typeof fetch);
       expect(e.message).not.toContain(KEY);
     }
+  });
+});
+
+describe("checkLlmAccess (no tokens spent)", () => {
+  const config = { baseUrl: "https://llm.example/v1", apiKey: "sk-secret-key-123", model: "gpt-x", timeoutMs: 90_000 };
+  const answer = (status: number, body?: unknown) => vi.fn(async () => new Response(body === undefined ? null : JSON.stringify(body), { status }));
+
+  it("asks for the model list with the key, and reports whether the model is in it", async () => {
+    const f = answer(200, { data: [{ id: "gpt-x" }, { id: "other" }] });
+    expect(await checkLlmAccess(config, f as unknown as typeof fetch)).toEqual({ modelListed: true });
+    expect(f).toHaveBeenCalledWith("https://llm.example/v1/models", expect.objectContaining({ headers: { authorization: "Bearer sk-secret-key-123" } }));
+    expect(await checkLlmAccess(config, answer(200, { data: [{ id: "other" }] }) as unknown as typeof fetch)).toEqual({ modelListed: false });
+  });
+
+  it("accepts an endpoint without a model list", async () => {
+    for (const r of [answer(404), answer(405), answer(200, { not: "a list" })]) expect(await checkLlmAccess(config, r as unknown as typeof fetch)).toEqual({ modelListed: null });
+  });
+
+  it("names the setting to fix, never the key", async () => {
+    const messages: string[] = [];
+    for (const f of [answer(401), answer(403), answer(500), vi.fn(async () => Promise.reject(new TypeError("fetch failed")))]) {
+      const err = await checkLlmAccess(config, f as unknown as typeof fetch).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(LlmError);
+      messages.push((err as Error).message);
+    }
+    expect(messages).toEqual([
+      "the LLM endpoint refused LLM_API_KEY (HTTP 401)",
+      "the LLM endpoint refused LLM_API_KEY (HTTP 403)",
+      "the LLM endpoint at LLM_BASE_URL failed (HTTP 500)",
+      "cannot reach the LLM endpoint at LLM_BASE_URL (https://llm.example/v1)",
+    ]);
+    expect(messages.join(" ")).not.toContain("sk-secret");
   });
 });

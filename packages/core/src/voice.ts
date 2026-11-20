@@ -294,6 +294,8 @@ export interface CastRecord {
   voiceFit: VoiceFit | null;
   mentionCount: number;
   speaks: boolean;
+  /** 0-based chapter where casting first saw the character; absent for the Announcer and Narrator. */
+  firstChapterIdx?: number | null;
 }
 
 export const ANNOUNCER_NAME = "Announcer";
@@ -339,6 +341,7 @@ export function buildCast(
           voiceFit: a.fit,
           mentionCount: c.mentionCount,
           speaks: c.speaks,
+          firstChapterIdx: c.firstChapterIdx,
         };
       }),
     ],

@@ -20,6 +20,8 @@ const csp = [
 
 const config: NextConfig = {
   reactStrictMode: true,
+  // The shared station schema is TypeScript source in a workspace package.
+  transpilePackages: ["@midnight-radio/core"],
   poweredByHeader: false,
   async headers() {
     return [

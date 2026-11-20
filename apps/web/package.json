@@ -14,13 +14,13 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@midnight-radio/core": "workspace:*",
     "next": "16.4.6",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@midnight-radio/core": "workspace:*",
     "@midnight-radio/mix": "workspace:*",
     "@midnight-radio/tts": "workspace:*",
     "@playwright/test": "1.65.1",
