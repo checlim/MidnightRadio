@@ -93,7 +93,11 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
 
-  packages/mix: {}
+  packages/mix:
+    dependencies:
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/tts:
     dependencies:

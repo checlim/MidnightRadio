@@ -50,7 +50,7 @@ packages/
   ingest/           Safe EPUB reading, chapter text, scene breaks and the 8,000-word splitter
   llm/              Casting and adaptation behind a provider-agnostic interface (planned)
   tts/              TtsProvider interface, strict WAV validation, an offline StubProvider, the atomic render cache, per-line retries and the QwenTtsProvider client for the local audio service
-  mix/              ffmpeg wrapper, ducking and loudness (planned)
+  mix/              ffmpeg wrapper (built); ducking and loudness (planned)
 services/
   local-audio/      Local Python host for Qwen3-TTS (built, Apple Silicon) and the reference server for the sound-effect API, used only on the generation machine
 mcp/
@@ -64,7 +64,7 @@ fixtures/
 
 ## Getting started
 
-**Requirements:** Node 24, pnpm 10.18 (via Corepack) and Git. ffmpeg is needed once the mixing stage lands. Generating episodes (not needed for development or tests) will also need Python and a machine that can run the local audio models: an NVIDIA GPU or Apple Silicon.
+**Requirements:** Node 24, pnpm 10.18 (via Corepack), Git, and ffmpeg with ffprobe (`brew install ffmpeg` on macOS; developed with 9.0.2). Tests that run ffmpeg are skipped without it; `REQUIRE_FFMPEG=1` makes a missing ffmpeg a failure. Generating episodes (not needed for development or tests) will also need Python and a machine that can run the local audio models: an NVIDIA GPU or Apple Silicon.
 
 ```sh
 corepack enable
