@@ -131,11 +131,19 @@ def run(
         _write_atomic(state_path, json.dumps(state, indent=2).encode("utf-8"))
         _write_atomic(out / "index.html", listening_page(cues, state).encode("utf-8"))
 
-    try:
-        model = client.health()
-    except SfxFatalError as err:
-        log(f"stopped: {err}")
-        return 2
+    model = None
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            model = client.health()
+            break
+        except SfxFatalError as err:
+            log(f"stopped: {err}")
+            return 2
+        except SfxClientError as err:  # unreachable or a server error: a tunnel may be waking up
+            if attempt == ATTEMPTS:
+                log(f"stopped: cannot use the sound-effect server ({err}). Is it running, and is SFX_SERVICE_URL right?")
+                return 2
+            sleep(2.0 ** attempt)
     if state["model"] is not None and state["model"] != model.identity():
         log(f"stopped: {out} holds takes from {state['model'].get('model')}@{str(state['model'].get('revision'))[:12]}, "
             f"but the server now runs {model.model}@{model.revision[:12]}. Use another --out folder for another model.")

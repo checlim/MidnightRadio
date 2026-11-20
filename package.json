@@ -6,7 +6,8 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "sfx:build": "pnpm --filter @midnight-radio/mix sfx:build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -355,6 +355,28 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(self.run_tool(), 2)
         self.assertEqual(list(json.loads((self.out / "takes.json").read_text())["takes"]["door_creak"]), ["1"])
 
+    def test_stops_with_a_clear_message_when_the_server_cannot_be_reached(self):
+        self.stub.close()
+        self.assertEqual(self.run_tool(), 2)
+        self.assertEqual(sum("could not reach" in line or "cannot use" in line for line in self.log), 1)
+        self.assertRegex(self.log[-1], r"^stopped: cannot use the sound-effect server \(could not reach the server: .*\)\. Is it running, and is SFX_SERVICE_URL right\?$")
+        self.stub = StubServer()  # for tearDown
+
+    def test_a_server_error_on_health_is_retried(self):
+        client = self.stub.client(TOKEN)
+        health = client.health
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise SfxClientError("the server failed: boom")
+            return health()
+
+        client.health = flaky
+        status = run(json.loads(json.dumps(CUES)), self.out, client, 1, None, log=self.log.append, sleep=no_sleep)
+        self.assertEqual((status, len(calls)), (0, 2))
+
     def test_only(self):
         self.assertEqual(self.run_tool(only={"rain"}), 0)
         self.assertEqual({r["prompt"] for r in self.renders()}, {"Steady rain on a roof."})
