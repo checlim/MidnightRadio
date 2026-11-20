@@ -123,5 +123,5 @@ Target category: **Resurrection** (Kiroween 2026). Demo content: public-domain G
 #### Acceptance Criteria
 
 1. THE SYSTEM SHALL display a notice that users must have the right to adapt uploaded content.
-2. THE SYSTEM SHALL use only sound effects and music licensed CC0 or created for the project (including foley generated offline with a locally run MOSS-SoundEffect v2.0), and SHALL list each asset's source and licence in `ATTRIBUTION.md`.
+2. THE SYSTEM SHALL use only sound effects and music licensed CC0 or created for the project (including foley generated offline through the documented sound-effect service API, `docs/sfx-service-api.md`, by a model whose output licence permits redistribution; reference model MOSS-SoundEffect v2.0, Apache-2.0), and SHALL list each asset's source and licence in `ATTRIBUTION.md`. For generated foley the record SHALL include the model, revision and output licence the service reported.
 3. THE SYSTEM SHALL label every Episode as AI-generated in its ID3 metadata and the player UI.

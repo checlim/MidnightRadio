@@ -17,7 +17,7 @@ Two promises guide the design:
 
 The planned live demo will ship pre-rendered public-domain Gothic fiction (*The Tell-Tale Heart*, *The Fall of the House of Usher*, *Dracula*), so listeners can tune in without triggering any generation. The live site will only play these pre-rendered episodes; generating new ones happens on a local machine.
 
-> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue, the worker process, the spend ledger, the generation-route guard, EPUB ingestion (chapters, scene breaks, part splitting, text normaliser), the bundled demo books, casting (character extraction, voice assignment, adding characters and editing voices) and the TTS provider interface with WAV validation, the atomic render cache, per-line rendering with retries and a pre-render plan, and local speech synthesis with Qwen3-TTS (the local audio service, its Apple Silicon backend and a 34-voice catalogue designed with VoiceDesign). Not wired up yet: the worker has no job handlers, and no route or paid call uses the guard or ledger. Not built yet: the MOSS sound-effect backend, adaptation, validation, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
+> **Status: early development.** Built and tested so far: the monorepo, the Script schema, SQLite migrations, the job queue, the worker process, the spend ledger, the generation-route guard, EPUB ingestion (chapters, scene breaks, part splitting, text normaliser), the bundled demo books, casting (character extraction, voice assignment, adding characters and editing voices) and the TTS provider interface with WAV validation, the atomic render cache, per-line rendering with retries and a pre-render plan, and local speech synthesis with Qwen3-TTS (the local audio service, its Apple Silicon backend and a 34-voice catalogue designed with VoiceDesign). Not wired up yet: the worker has no job handlers, and no route or paid call uses the guard or ledger. Not built yet: the sound library and its generation tool, adaptation, validation, mixing, the radio player and the deployment. See [`tasks.md`](.kiro/specs/midnight-radio/tasks.md) for progress.
 
 ## How it works
 
@@ -52,7 +52,7 @@ packages/
   tts/              TtsProvider interface, strict WAV validation, an offline StubProvider, the atomic render cache, per-line retries and the QwenTtsProvider client for the local audio service
   mix/              ffmpeg wrapper, ducking and loudness (planned)
 services/
-  local-audio/      Local Python host for Qwen3-TTS and MOSS-SoundEffect v2.0, used only on the generation machine; the server and a fake backend are built, the real model backends are planned
+  local-audio/      Local Python host for Qwen3-TTS (built, Apple Silicon) and the reference server for the sound-effect API, used only on the generation machine
 mcp/
   sfx-library/      MCP server for curating CC0 sound assets in Kiro (planned)
 fixtures/
@@ -137,7 +137,7 @@ Agent hooks, the `sfx-library` MCP server and a `script-auditor` custom agent ar
 - Midnight Radio does not circumvent DRM and does not clone real people's voices.
 - Generated episodes are AI-produced and will be labelled as such in the player.
 - Character voices are designed from written descriptions with Qwen3-TTS VoiceDesign, never copied from a real person.
-- Sound effects and music will be CC0 or project-created (some foley generated locally with MOSS-SoundEffect v2.0), with each asset's source and licence listed in `ATTRIBUTION.md`.
+- Sound effects and music will be CC0 or project-created (some foley generated offline through the [sound-effect service API](docs/sfx-service-api.md), with a model of the operator's choosing, such as MOSS-SoundEffect v2.0), with each asset's source and licence listed in `ATTRIBUTION.md`.
 
 ## License
 

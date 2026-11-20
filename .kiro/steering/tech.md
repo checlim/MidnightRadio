@@ -4,7 +4,7 @@ inclusion: always
 
 # Tech Conventions
 
-- TypeScript strict mode everywhere; Node 24; pnpm workspaces. The one exception is `services/local-audio`, a Python (3.10+) service that hosts the audio models on the generation machine only; it uses the standard library for its server, is tested with `unittest`, runs through `uv`, and is never part of the deployed container.
+- TypeScript strict mode everywhere; Node 24; pnpm workspaces. The one exception is `services/local-audio`, a Python (3.10+) service that hosts the audio models on the generation machine only; it uses the standard library for its server, is tested with `unittest`, runs through `uv`, and is never part of the deployed container. Foley is generated offline through the sound-effect service API (`docs/sfx-service-api.md`) from whatever server the operator points it at (local or a remote GPU over https with a token); the repo ships no particular sound-effect model.
 - Validate every external/LLM boundary with Zod; never trust model output unparsed.
 - All LLM and TTS access goes through `packages/llm` and `packages/tts` interfaces — no direct SDK calls elsewhere.
 - Secrets only from environment variables; never log request headers or keys.

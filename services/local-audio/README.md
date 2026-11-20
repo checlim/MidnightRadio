@@ -1,8 +1,8 @@
 # local-audio
 
-A small HTTP service that hosts the audio models (Qwen3-TTS for speech, MOSS-SoundEffect v2.0 for foley) on **the generation machine**. It is never part of the deployed container: the live site only plays pre-rendered episodes.
+A small HTTP service that hosts the speech model (Qwen3-TTS) on **the generation machine**, and implements the [sound-effect service API](../../docs/sfx-service-api.md) on loopback. It is never part of the deployed container: the live site only plays pre-rendered episodes.
 
-**Status.** Two backends: `qwen-mlx` speaks with Qwen3-TTS on Apple Silicon (built and tested against the real model on an M2), and `fake` returns tones for tests. Sound effects (`/sfx`) have no real backend yet; that comes with the foley task (6.1).
+**Status.** Two backends: `qwen-mlx` speaks with Qwen3-TTS on Apple Silicon (built and tested against the real model on an M2), and `fake` returns tones for tests. No real sound-effect backend is built here: on a 16 GB M2, MOSS-SoundEffect v2.0 takes 11–12.5 minutes per clip (Task 6.1 spike), so foley comes from a remote server implementing the same API.
 
 ## Run (fake backend)
 
@@ -37,9 +37,9 @@ uv run --no-project --python ">=3.10" python -m unittest discover -s tests -t .
 
 | Endpoint | Request | Answer |
 |---|---|---|
-| `GET /health` | none | JSON: service name, `apiVersion`, backend, `tts` and `sfx` model info (`model`, `revision`, `sampleRate`, `ready`), and for every voice its `clipSha256` and `transcriptSha256`. The TypeScript client compares these with its catalogue before trusting any audio. |
+| `GET /health` | none | JSON: service name, `apiVersion`, backend, `tts` and `sfx` model info (`model`, `revision`, `sampleRate`, `ready`; `sfx` also `license` and optional `weightsSha256`), and for every voice its `clipSha256` and `transcriptSha256`. The TypeScript client compares these with its catalogue before trusting any audio. |
 | `POST /tts` | JSON `{voiceId, text, delivery?, seed?}` | `audio/wav` (24 kHz, mono, 16-bit) with `X-Model-Revision` and `X-Render-Ms`. |
-| `POST /sfx` | JSON `{prompt, durationSec, seed?}` | `audio/wav` (mono, 16-bit). |
+| `POST /sfx` | JSON `{prompt, durationSec, seed?}` | `audio/wav` (mono, 16-bit) with `X-Model-Revision`. The full contract, which remote servers also follow, is [`docs/sfx-service-api.md`](../../docs/sfx-service-api.md). |
 
 Errors are JSON `{"error": {"code", "message"}}`: 400 bad request, 401 unauthorized, 403 bad host or origin, 404 unknown voice or path, 405 wrong method, 411 and 413 and 415 for the body, 503 busy or not ready, 500 internal (no details).
 
@@ -111,4 +111,4 @@ MR_QWEN_BASE=<Base snapshot dir> MR_QWEN_DESIGN=<VoiceDesign snapshot dir> HF_HU
 
 A changed catalogue changes its catalogue hash, which `packages/tts/src/voice-catalogue.test.ts` pins; update the pin in the same commit.
 
-A CUDA backend (`qwen-torch`, `qwen-tts`) and the MOSS-SoundEffect backend for `/sfx` are not built.
+A CUDA backend (`qwen-torch`, `qwen-tts`) is not built. Neither is a sound-effect backend; any server implementing [the sound-effect API](../../docs/sfx-service-api.md) can be used instead.
