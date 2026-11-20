@@ -1,3 +1,4 @@
+export * from "./adaptation.js";
 export * from "./cast.js";
 export * from "./cast-edit.js";
 export * from "./normalise.js";
