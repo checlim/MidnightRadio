@@ -112,3 +112,20 @@ MR_QWEN_BASE=<Base snapshot dir> MR_QWEN_DESIGN=<VoiceDesign snapshot dir> HF_HU
 A changed catalogue changes its catalogue hash, which `packages/tts/src/voice-catalogue.test.ts` pins; update the pin in the same commit.
 
 A CUDA backend (`qwen-torch`, `qwen-tts`) is not built. Neither is a sound-effect backend; any server implementing [the sound-effect API](../../docs/sfx-service-api.md) can be used instead.
+
+## Generating foley
+
+`tools/generate_sfx.py` renders candidate takes of every cue in `assets/sfx/prompts.json` through any server that implements the [sound-effect service API](../../docs/sfx-service-api.md): this service on loopback, or a remote GPU (for example a notebook behind a tunnel) that you run yourself. Standard library only, so any Python 3.10+ works:
+
+```sh
+SFX_SERVICE_URL=https://<your-tunnel-host> SFX_SERVICE_TOKEN=<token> \
+  python tools/generate_sfx.py --takes 3            # --only door_creak,rain for a few cues
+```
+
+- Take N of a cue uses seed `seed + N - 1`. Takes go to the git-ignored `sfx-candidates/` folder (`<cue>/take-N.wav` as the server sent them, `takes.json`, and `index.html` to listen and compare).
+- Stop and restart at any time, also with a new tunnel URL: takes that still match their prompt, duration and seed are kept, failed ones are retried.
+- The folder belongs to one model. If the server reports a different model or revision, the tool stops; use another `--out` folder for another model.
+- Plain `http` is accepted only for `127.0.0.1`/`localhost`; any other host needs `https` and a token. Redirects are refused, and the token never appears in output.
+- Exit status: 0 every take rendered, 1 some takes failed (rerun to retry), 2 stopped (configuration, refused request or model change).
+
+To try it without a model, run this service with `--backend fake` and point `SFX_SERVICE_URL` at it. Choosing takes and turning them into `assets/sfx/` (24 kHz, normalised, with `index.json` and attribution) is the next step of Task 6.1.

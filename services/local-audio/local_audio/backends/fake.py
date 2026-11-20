@@ -26,7 +26,7 @@ class FakeBackend(Backend):
         return {"model": "fake-tts", "revision": "fake-1", "sampleRate": TTS_RATE, "ready": True}
 
     def sfx_info(self) -> Optional[dict]:
-        return {"model": "fake-sfx", "revision": "fake-1", "sampleRate": SFX_RATE, "ready": True}
+        return {"model": "fake-sfx", "revision": "fake-1", "license": "CC0-1.0", "sampleRate": SFX_RATE, "ready": True}
 
     def render_tts(self, request: TtsRequest) -> bytes:
         if self._delay:
