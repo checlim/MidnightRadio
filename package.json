@@ -8,7 +8,8 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "sfx:build": "pnpm --filter @midnight-radio/mix sfx:build",
-    "generate": "pnpm --filter @midnight-radio/worker generate"
+    "generate": "pnpm --filter @midnight-radio/worker generate",
+    "studio": "tsx scripts/studio.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

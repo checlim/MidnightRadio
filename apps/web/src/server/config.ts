@@ -52,3 +52,12 @@ export function loadWebConfig(env: Record<string, string | undefined> = process.
     clientIpHeader: d.CLIENT_IP_HEADER,
   };
 }
+
+/** For pages that must never fail (the radio): whether to show the studio link. A malformed setting reads as off. */
+export function generationShown(env: Record<string, string | undefined> = process.env): boolean {
+  try {
+    return loadWebConfig(env).generationEnabled;
+  } catch {
+    return false;
+  }
+}

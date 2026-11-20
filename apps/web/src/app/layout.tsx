@@ -12,7 +12,13 @@ export const viewport: Viewport = { themeColor: "#0d1b1e", colorScheme: "dark" }
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {/* Every page carries the label (Req 9.3); the episodes carry it in their ID3 tags too. */}
+        <p className="ai-badge" role="note">
+          AI-generated
+        </p>
+        {children}
+      </body>
     </html>
   );
 }

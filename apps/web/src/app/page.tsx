@@ -1,4 +1,8 @@
 import { Radio } from "../components/Radio";
+import { generationShown } from "../server/config";
+
+// The studio link depends on GENERATION_ENABLED at run time, not at build time.
+export const dynamic = "force-dynamic";
 
 export default function Home() {
   return (
@@ -12,6 +16,11 @@ export default function Home() {
         <span className="deco-rule" aria-hidden="true" />
       </header>
       <Radio />
+      {generationShown() && (
+        <p className="studio-link">
+          <a href="/studio">Make your own broadcast from a DRM-free book</a>
+        </p>
+      )}
       <footer className="notice">
         <p>
           <strong>AI-generated broadcast.</strong> Every episode is an adaptation of a public-domain book, voiced and mixed by AI.

@@ -7,7 +7,7 @@ import { saveCast } from "@midnight-radio/db";
 import { buildEpub } from "@midnight-radio/ingest/src/test-support/build-epub.js";
 import { EPISODE_JOB, JobQueue } from "@midnight-radio/worker";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadWebConfig } from "./config";
+import { generationShown, loadWebConfig } from "./config";
 import { PASSKEY_HEADER, resetGuards, sharedDb } from "./guard";
 import { bookRoute, castRoute, generateRoute, uploadRoute } from "./routes";
 
@@ -35,6 +35,7 @@ describe("web configuration", () => {
     expect(() => loadWebConfig({ GENERATION_ENABLED: "on" })).toThrow('GENERATION_ENABLED must be "true" or "false"');
     expect(() => loadWebConfig({ CLIENT_IP_HEADER: "X-Forwarded-For" })).toThrow(/not x-forwarded-for/);
     expect(loadWebConfig({ CLIENT_IP_HEADER: "Fly-Client-IP" }).clientIpHeader).toBe("fly-client-ip");
+    expect([generationShown({ GENERATION_ENABLED: "true" }), generationShown({ GENERATION_ENABLED: "on" }), generationShown({})]).toEqual([true, false, false]); // the radio never fails over a bad setting
   });
 });
 
