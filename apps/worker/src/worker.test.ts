@@ -30,8 +30,9 @@ const captureLog = () => {
 
 describe("loadWorkerConfig", () => {
   it("defaults to /data and a shutdown timeout under common platform kill timeouts", () => {
-    expect(loadWorkerConfig({})).toEqual({ dataDir: "/data", renderCacheDir: "/data/render-cache", shutdownTimeoutMs: 4_000 });
-    expect(loadWorkerConfig({ DATA_DIR: " /tmp/x ", WORKER_SHUTDOWN_TIMEOUT_MS: "2500" })).toEqual({ dataDir: "/tmp/x", renderCacheDir: "/tmp/x/render-cache", shutdownTimeoutMs: 2_500 });
+    expect(loadWorkerConfig({})).toEqual({ dataDir: "/data", renderCacheDir: "/data/render-cache", shutdownTimeoutMs: 4_000, generationEnabled: false, stubProviders: false, publicDir: expect.stringMatching(/apps\/web\/public$/) });
+    expect(loadWorkerConfig({ DATA_DIR: " /tmp/x ", WORKER_SHUTDOWN_TIMEOUT_MS: "2500", GENERATION_ENABLED: "TRUE", PUBLIC_DIR: "/tmp/pub" })).toMatchObject({ dataDir: "/tmp/x", renderCacheDir: "/tmp/x/render-cache", shutdownTimeoutMs: 2_500, generationEnabled: true, publicDir: "/tmp/pub" });
+    expect(() => loadWorkerConfig({ GENERATION_ENABLED: "yes" })).toThrow('invalid worker configuration: GENERATION_ENABLED must be "true" or "false"');
   });
 
   it("rejects malformed values without echoing them", () => {

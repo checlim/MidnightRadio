@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 export interface WorkerConfig {
@@ -8,15 +9,37 @@ export interface WorkerConfig {
   renderCacheDir: string;
   /** How long to wait for the current job to be released on SIGTERM before forcing exit. */
   shutdownTimeoutMs: number;
+  /** `GENERATION_ENABLED=true`: register generation jobs. Off by default, and always off on the live site (Req 8.5). */
+  generationEnabled: boolean;
+  /** `MIDNIGHT_STUB_PROVIDERS=true`: generate with the offline model and tone voices (tests, trying the flow). */
+  stubProviders: boolean;
+  /** Where episodes and stations.json are published (`PUBLIC_DIR`, default apps/web/public). */
+  publicDir: string;
 }
 
 export const DB_FILE = "midnight-radio.db";
 export const RENDER_CACHE_DIR = "render-cache";
 
+const DEFAULT_PUBLIC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../web/public");
+
+/** "true" or "false" (case-insensitive); unset or empty is false. Anything else is an error, so a typo cannot silently enable generation. */
+const flag = z
+  .string()
+  .optional()
+  .transform((s) => s?.trim().toLowerCase() ?? "")
+  .pipe(z.enum(["", "true", "false"], { message: 'must be "true" or "false"' }))
+  .transform((s) => s === "true");
+
 // Fly.io's default kill timeout is 5 s and Docker's is 10 s; stay under both.
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 4_000;
 
 const WorkerEnvSchema = z.object({
+  GENERATION_ENABLED: flag,
+  MIDNIGHT_STUB_PROVIDERS: flag,
+  PUBLIC_DIR: z
+    .string()
+    .optional()
+    .transform((s) => s?.trim() || DEFAULT_PUBLIC_DIR),
   DATA_DIR: z
     .string()
     .optional()
@@ -44,5 +67,12 @@ export function loadWorkerConfig(env: Record<string, string | undefined> = proce
     throw new Error(`invalid worker configuration: ${problems.join("; ")}`);
   }
   const dataDir = parsed.data.DATA_DIR;
-  return { dataDir, renderCacheDir: join(dataDir, RENDER_CACHE_DIR), shutdownTimeoutMs: parsed.data.WORKER_SHUTDOWN_TIMEOUT_MS };
+  return {
+    dataDir,
+    renderCacheDir: join(dataDir, RENDER_CACHE_DIR),
+    shutdownTimeoutMs: parsed.data.WORKER_SHUTDOWN_TIMEOUT_MS,
+    generationEnabled: parsed.data.GENERATION_ENABLED,
+    stubProviders: parsed.data.MIDNIGHT_STUB_PROVIDERS,
+    publicDir: resolve(parsed.data.PUBLIC_DIR),
+  };
 }

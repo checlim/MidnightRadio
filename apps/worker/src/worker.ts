@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { BudgetLedger, loadBudgetConfig, openDb } from "@midnight-radio/db";
 import { sweepAbandonedTemps } from "@midnight-radio/tts";
 import { DB_FILE, loadWorkerConfig, type WorkerConfig } from "./config.js";
+import { createGenerationServices } from "./generate/services.js";
 import { createHandlers, type HandlerDeps } from "./handlers.js";
 import { JobQueue, type JobQueueOptions } from "./jobs/queue.js";
 import { runWorker, type JobHandler } from "./jobs/runner.js";
@@ -49,7 +50,8 @@ export function startWorker(opts: WorkerOptions = {}): RunningWorker {
   try {
     queue = new JobQueue(db, opts.queueOptions);
     const ledger = new BudgetLedger(db, budget);
-    handlers = (opts.createHandlers ?? createHandlers)({ db, queue, ledger });
+    const generation = config.generationEnabled ? createGenerationServices(env, config, (m, fields) => log.info(m, fields)) : undefined;
+    handlers = (opts.createHandlers ?? createHandlers)({ db, queue, ledger, ...(generation ? { generation } : {}) });
   } catch (err) {
     db.close();
     throw err;
@@ -59,6 +61,8 @@ export function startWorker(opts: WorkerOptions = {}): RunningWorker {
   log.info("worker started", {
     dataDir: config.dataDir,
     jobKinds: Object.keys(handlers),
+    generationEnabled: config.generationEnabled,
+    stubProviders: config.generationEnabled && config.stubProviders,
     ttsEnabled: budget.dailyTtsChars > 0,
     llmEnabled: budget.dailyLlmTokens > 0,
   });

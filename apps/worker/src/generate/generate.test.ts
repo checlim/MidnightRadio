@@ -12,7 +12,7 @@ import { StubLlmProvider, type LlmRequest } from "@midnight-radio/llm";
 import { StubProvider, encodeWav, type QwenTtsOptions } from "@midnight-radio/tts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { promptCast, speechLines, validationCast } from "./cast-lines.js";
-import { GenerateError, generateBook, needsLlm, type GenerateDeps } from "./pipeline.js";
+import { BudgetStopError, GenerateError, generateBook, needsLlm, type GenerateDeps } from "./pipeline.js";
 import { planBook, selectChapters, slug } from "./plan.js";
 import { preflight } from "./preflight.js";
 import { mergeStations, readStations, writeStations } from "./stations.js";
@@ -326,7 +326,7 @@ describe.skipIf(!hasFfmpeg)("generateBook end to end (stub model, stub voices, r
     const p = await plan();
     const tight = new BudgetLedger(db, { ...BUDGET, dailyLlmTokens: 10 });
     const err = await generateBook(p, { chapters: new Set([1]), charBudget: 50_000 }, { ...deps, ledger: tight }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(GenerateError);
+    expect(err).toBeInstanceOf(BudgetStopError);
     expect((err as Error).message).toMatch(/GLOBAL_DAILY_LLM_TOKEN_LIMIT.*run again; finished work is kept/);
   });
 

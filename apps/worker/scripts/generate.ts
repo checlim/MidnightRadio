@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { BudgetLedger, openDb } from "@midnight-radio/db";
 import { IngestError, ingestEpub } from "@midnight-radio/ingest";
 import { DB_FILE, RENDER_CACHE_DIR } from "../src/config.js";
-import { GenerateError, generateBook, needsLlm } from "../src/generate/pipeline.js";
+import { BudgetStopError, GenerateError, generateBook, needsLlm } from "../src/generate/pipeline.js";
 import { planBook, selectChapters } from "../src/generate/plan.js";
 import { preflight } from "../src/generate/preflight.js";
 
@@ -89,7 +89,7 @@ try {
   for (const f of failed) console.log(`  episode ${f.episodeNumber} (${f.title}): ${f.status === "failed" ? f.reason : ""}`);
   process.exitCode = failed.length > 0 ? 1 : 0;
 } catch (err) {
-  if (err instanceof GenerateError) stop(err.message);
+  if (err instanceof GenerateError || err instanceof BudgetStopError) stop(err.message);
   throw err;
 } finally {
   db.close();
