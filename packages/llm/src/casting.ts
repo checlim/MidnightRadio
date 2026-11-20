@@ -111,8 +111,11 @@ For each character:
 
 Do not invent characters. Reply with JSON only.`;
 
+/** Book text cannot close the data block: any `</book_excerpt` it contains loses its slash. */
+const defuseExcerptTags = (text: string): string => text.replace(/<\s*\/\s*book_excerpt/gi, "< book_excerpt");
+
 export function castingUserPrompt(chunk: BookChunk): string {
-  return `<book_excerpt chapter="${chunk.chapterIdx + 1}">\n${chunk.text}\n</book_excerpt>`;
+  return `<book_excerpt chapter="${chunk.chapterIdx + 1}">\n${defuseExcerptTags(chunk.text)}\n</book_excerpt>`;
 }
 
 /** JSON Schema for the provider: structure only. Length and count limits are enforced locally by Zod. */
