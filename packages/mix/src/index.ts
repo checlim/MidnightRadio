@@ -1,4 +1,5 @@
 export * from "./assemble-sfx.js";
+export * from "./autopick.js";
 export * from "./envelope.js";
 export * from "./episode.js";
 export * from "./ffmpeg.js";

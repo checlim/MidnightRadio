@@ -8,7 +8,8 @@
     "typecheck": "tsc -p .",
     "test": "vitest run --passWithNoTests",
     "sfx:assemble": "tsx scripts/assemble-sfx.ts",
-    "sfx:import": "tsx scripts/import-sfx.ts"
+    "sfx:import": "tsx scripts/import-sfx.ts",
+    "sfx:auto": "tsx scripts/autopick-sfx.ts"
   },
   "dependencies": {
     "@midnight-radio/core": "workspace:*",
