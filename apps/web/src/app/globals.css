@@ -1,0 +1,380 @@
+/* Midnight Radio: walnut, brass and amber on a moonlit Gothic night (after docs/images/midnight-radio-banner.png). */
+:root {
+  --night: #0d1b1e;
+  --night-2: #13292d;
+  --teal-mist: #1f3d42;
+  --cream: #f3e3bf;
+  --cream-dim: #c9b88f;
+  --brass: #c8973f;
+  --brass-hi: #f0c870;
+  --brass-lo: #6e4a17;
+  --amber: #ffb347;
+  --amber-glow: rgba(255, 170, 60, 0.55);
+  --walnut: #5a2a14;
+  --walnut-hi: #9a4b23;
+  --focus: #ffe08a;
+  --display: "Didot", "Bodoni 72", "Playfair Display", Georgia, "Times New Roman", serif;
+  --body: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: radial-gradient(ellipse at 75% 10%, #2a4a4f 0%, var(--night-2) 35%, var(--night) 75%) fixed;
+  color: var(--cream);
+  font-family: var(--body);
+  line-height: 1.5;
+}
+
+/* Moonlight and mist behind everything. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 82% 12%, rgba(255, 246, 214, 0.35) 0, rgba(255, 246, 214, 0.08) 4vmin, transparent 14vmin),
+    radial-gradient(ellipse at 20% 100%, rgba(31, 61, 66, 0.9), transparent 60%);
+}
+
+.stage {
+  position: relative;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: clamp(1rem, 3vw, 2.5rem);
+}
+
+.masthead {
+  text-align: center;
+  margin-bottom: clamp(1rem, 3vw, 2rem);
+}
+
+.masthead h1 {
+  margin: 0.3rem 0 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(2.6rem, 8vw, 5.2rem);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  line-height: 1;
+  color: var(--cream);
+  text-shadow: 0 0 18px rgba(255, 200, 120, 0.35), 0 2px 0 #7a5a2a;
+}
+
+.masthead h1 span {
+  display: block;
+  font-size: 0.86em;
+}
+
+.tagline {
+  margin: 0.6rem 0;
+  color: var(--cream-dim);
+  font-style: italic;
+}
+
+.deco-rule {
+  display: block;
+  height: 10px;
+  max-width: 420px;
+  margin: 0 auto;
+  background:
+    linear-gradient(90deg, transparent, var(--brass) 20%, var(--brass) 80%, transparent) center / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 45%, var(--brass) 45% 55%, transparent 55%) center / 100% 5px no-repeat;
+}
+
+.notice {
+  margin-top: 2rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid rgba(200, 151, 63, 0.4);
+  border-radius: 6px;
+  background: rgba(13, 27, 30, 0.7);
+  color: var(--cream-dim);
+  font-size: 0.95rem;
+}
+
+.notice strong {
+  color: var(--cream);
+}
+
+/* ---------- The radio ---------- */
+
+.radio-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
+  gap: clamp(1rem, 3vw, 2rem);
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .radio-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cabinet {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 800 / 560;
+  filter: drop-shadow(0 30px 40px rgba(0, 0, 0, 0.6));
+}
+
+.cabinet > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Controls sit over the knobs drawn in the SVG (positions are fractions of the 800×560 drawing). */
+.control {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: transparent;
+}
+
+.control:focus-visible,
+.dial-hit:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 4px;
+}
+
+.control-power {
+  left: calc(205 / 800 * 100%);
+  top: calc(452 / 560 * 100%);
+  width: calc(76 / 800 * 100%);
+  aspect-ratio: 1;
+}
+
+.control-tone {
+  left: calc(595 / 800 * 100%);
+  top: calc(452 / 560 * 100%);
+  width: calc(76 / 800 * 100%);
+  aspect-ratio: 1;
+}
+
+.control-tuning {
+  left: calc(400 / 800 * 100%);
+  top: calc(452 / 560 * 100%);
+  width: calc(112 / 800 * 100%);
+  aspect-ratio: 1;
+}
+
+/* The dial window itself is also a drag target for the tuning slider. */
+.dial-hit {
+  position: absolute;
+  left: calc(170 / 800 * 100%);
+  top: calc(318 / 560 * 100%);
+  width: calc(460 / 800 * 100%);
+  height: calc(78 / 560 * 100%);
+  cursor: ew-resize;
+  border-radius: 12px;
+  touch-action: none;
+}
+
+.engraving {
+  position: absolute;
+  transform: translateX(-50%);
+  top: calc(510 / 560 * 100%);
+  font-family: var(--display);
+  font-size: clamp(0.55rem, 1.3vw, 0.8rem);
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--brass-hi);
+  text-shadow: 0 1px 0 #2a1306;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.retry {
+  position: absolute;
+  left: 50%;
+  top: 8%;
+  transform: translateX(-50%);
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--brass);
+  border-radius: 999px;
+  background: rgba(13, 27, 30, 0.92);
+  color: var(--cream);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ---------- Programme guide ---------- */
+
+.guide {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.card {
+  padding: 1rem 1.2rem;
+  border-radius: 6px;
+  background: linear-gradient(180deg, #f6ead0, #e8d6ad);
+  color: #2b1a0c;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.4), inset 0 0 40px rgba(120, 80, 30, 0.18);
+}
+
+.card h2 {
+  margin: 0 0 0.4rem;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: 0.85rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: #6e4a17;
+}
+
+.now-playing .station {
+  font-family: var(--display);
+  font-size: 1.3rem;
+  margin: 0;
+}
+
+.now-playing .speaker {
+  margin: 0.6rem 0 0.1rem;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  color: #6e3412;
+}
+
+.now-playing .line {
+  margin: 0;
+  font-size: 1.1rem;
+  font-style: italic;
+  min-height: 3em;
+}
+
+.muted {
+  color: #6b5a3e;
+}
+
+.warming {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.6rem;
+}
+
+/* A valve filament glowing as it warms. */
+.filament {
+  flex: none;
+  width: 28px;
+  height: 40px;
+  border-radius: 14px 14px 6px 6px;
+  border: 1px solid rgba(110, 74, 23, 0.6);
+  background: radial-gradient(ellipse at 50% 60%, rgba(255, 150, 40, 0.95) 0 18%, rgba(255, 120, 30, 0.35) 40%, transparent 70%), rgba(255, 255, 255, 0.25);
+  animation: filament 1.8s ease-in-out infinite;
+}
+
+@keyframes filament {
+  0%, 100% { filter: brightness(0.75); box-shadow: 0 0 6px rgba(255, 140, 40, 0.35); }
+  50% { filter: brightness(1.25); box-shadow: 0 0 18px rgba(255, 150, 40, 0.8); }
+}
+
+progress {
+  width: 100%;
+  accent-color: #b5651d;
+}
+
+.transcript-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.transcript-tools input[type="search"] {
+  flex: 1 1 10rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #b89a63;
+  border-radius: 4px;
+  background: #fff8e8;
+  font: inherit;
+  color: inherit;
+}
+
+.transcript {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 340px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(110, 74, 23, 0.3);
+}
+
+.transcript button {
+  display: grid;
+  grid-template-columns: 3.2rem 1fr;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.3rem;
+  border: 0;
+  border-bottom: 1px solid rgba(110, 74, 23, 0.15);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.transcript button:hover {
+  background: rgba(181, 101, 29, 0.08);
+}
+
+.transcript button:focus-visible {
+  outline: 2px solid #8a4b10;
+  outline-offset: -2px;
+}
+
+.transcript [aria-current="true"] button {
+  background: rgba(255, 170, 60, 0.28);
+}
+
+.transcript .match button {
+  box-shadow: inset 3px 0 0 #b5651d;
+}
+
+.transcript time {
+  color: #7a6440;
+  font-variant-numeric: tabular-nums;
+}
+
+.transcript .who {
+  font-variant: small-caps;
+  color: #6e3412;
+  margin-right: 0.3rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .filament {
+    animation: none;
+  }
+  .needle,
+  .knob-rot {
+    transition: none !important;
+  }
+}

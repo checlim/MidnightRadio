@@ -20,3 +20,11 @@ services/local-audio/spike-output/
 services/local-audio/catalogue-candidates/
 services/local-audio/sfx-candidates/
 music-candidates/
+.next/
+next-env.d.ts
+apps/web/public/episodes/
+apps/web/public/stations.json
+apps/web/e2e/.fixtures/
+apps/web/test-results/
+apps/web/playwright-report/
+*.tsbuildinfo
