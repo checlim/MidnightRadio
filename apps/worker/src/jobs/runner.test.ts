@@ -2,7 +2,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 import { BudgetLedger, openDb } from "@midnight-radio/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { LeaseLostError, OverBudgetError, PermanentJobError } from "./errors.js";
+import { renderSegments, type RenderCache } from "@midnight-radio/tts";
+import { LeaseLostError, OverBudgetError, PermanentJobError, isFatalJobError } from "./errors.js";
 import { JobQueue } from "./queue.js";
 import { runOnce, runWorker, type JobHandler } from "./runner.js";
 
@@ -238,5 +239,29 @@ describe("runWorker", () => {
     stop.abort();
     await worker;
     expect(done).toEqual(["c1", "c2", "c3"]);
+  });
+});
+
+describe("isFatalJobError with renderSegments", () => {
+  it("stops a render once the lease is lost instead of recording the line as failed and moving on", async () => {
+    expect(isFatalJobError(new LeaseLostError("j1"))).toBe(true);
+    expect(isFatalJobError(new Error("boom"))).toBe(false);
+    const rendered: string[] = [];
+    const cache = {
+      render: async (req: { text: string }) => {
+        if (req.text === "two") throw new LeaseLostError("j1");
+        rendered.push(req.text);
+        return { key: req.text, path: `/x/${req.text}.wav`, durationMs: 1, source: "rendered" as const };
+      },
+    };
+    const lines = ["one", "two", "three"].map((text, i) => ({ id: String(i), voiceId: "v", text }));
+    const run = (isFatal?: (err: unknown) => boolean) => renderSegments(lines, { cache: cache as unknown as RenderCache, parallelism: 1, delay: async () => {}, ...(isFatal ? { isFatal } : {}) });
+    await expect(run(isFatalJobError)).rejects.toBeInstanceOf(LeaseLostError);
+    expect(rendered).toEqual(["one"]);
+    // Without it, the lost lease is just a failed line and the run carries on rendering for a job it no longer owns.
+    rendered.length = 0;
+    const outcomes = await run();
+    expect(outcomes.map((o) => o.status)).toEqual(["rendered", "failed", "rendered"]);
+    expect(rendered).toEqual(["one", "three"]);
   });
 });

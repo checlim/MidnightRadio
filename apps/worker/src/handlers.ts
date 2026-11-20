@@ -6,7 +6,7 @@ import type { JobHandler } from "./jobs/runner.js";
 export interface HandlerDeps {
   db: DatabaseSync;
   queue: JobQueue;
-  /** Every paid LLM/TTS call must go through `ledger.withReservation`, with `ctx.assertLease` as the fence. */
+  /** Every metered LLM call and TTS render must go through `ledger.withReservation`, with `ctx.assertLease` as the fence. Render jobs pass `isFatalJobError` to `renderSegments`. */
   ledger: BudgetLedger;
 }
 

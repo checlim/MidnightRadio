@@ -128,37 +128,11 @@ export class RenderCache {
   }
 
   /**
-   * Remove temp files left by writers that died. A file is removed only if this process is not
-   * writing it, its job is not reported active, and it is older than `olderThanMs`. Only files
-   * named like our temp files are ever touched. Returns the removed names.
+   * Remove temp files left by writers that died: `sweepAbandonedTemps` on this cache's folder,
+   * also skipping the files this process is writing right now.
    */
-  async sweepAbandoned(opts: { olderThanMs?: number; isJobActive?: (jobId: string) => boolean; now?: number } = {}): Promise<string[]> {
-    const olderThan = opts.olderThanMs ?? DEFAULT_ABANDONED_MS;
-    const now = opts.now ?? Date.now();
-    let names: string[];
-    try {
-      names = await readdir(this.dir);
-    } catch (err) {
-      if (isNotFound(err)) return [];
-      throw err;
-    }
-    const removed: string[] = [];
-    for (const name of names) {
-      const m = TEMP_NAME.exec(name);
-      if (!m) continue;
-      const path = join(this.dir, name);
-      if (this.activeTemps.has(path) || opts.isJobActive?.(m[2]!)) continue;
-      let info;
-      try {
-        info = await stat(path);
-      } catch {
-        continue; // already gone
-      }
-      if (now - info.mtimeMs < olderThan) continue;
-      await rm(path, { force: true });
-      removed.push(name);
-    }
-    return removed;
+  async sweepAbandoned(opts: SweepOptions = {}): Promise<string[]> {
+    return sweepAbandonedTemps(this.dir, { ...opts, isWriting: (path) => this.activeTemps.has(path) });
   }
 
   private keyFor(request: SynthesisRequest): { key: string; req: SynthesisRequest } {
@@ -320,3 +294,46 @@ const invalidOutput = (message: string) => new TtsError("invalid_output", messag
 
 /** Job ids go into file names: keep letters, digits, underscore and dash. */
 const safeJobId = (jobId: string | undefined) => (jobId ?? "nojob").replace(/[^\w-]/g, "_").slice(0, 64) || "nojob";
+
+export interface SweepOptions {
+  /** Default 10 minutes. */
+  olderThanMs?: number;
+  /** True while the job that wrote a temp file may still be running; its files are kept. */
+  isJobActive?: (jobId: string) => boolean;
+  now?: number;
+}
+
+/**
+ * Remove temp files left in a render cache folder by writers that died. A file is removed only
+ * if it is named like a cache temp file, its job is not reported active, nothing in this process
+ * is writing it, and it is older than `olderThanMs`. Published `<key>.wav` files and anything else
+ * are never touched. A missing folder is fine. Returns the removed names.
+ */
+export async function sweepAbandonedTemps(dir: string, opts: SweepOptions & { isWriting?: (path: string) => boolean } = {}): Promise<string[]> {
+  const olderThan = opts.olderThanMs ?? DEFAULT_ABANDONED_MS;
+  const now = opts.now ?? Date.now();
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch (err) {
+    if (isNotFound(err)) return [];
+    throw err;
+  }
+  const removed: string[] = [];
+  for (const name of names) {
+    const m = TEMP_NAME.exec(name);
+    if (!m) continue;
+    const path = join(dir, name);
+    if (opts.isWriting?.(path) || opts.isJobActive?.(m[2]!)) continue;
+    let info;
+    try {
+      info = await stat(path);
+    } catch {
+      continue; // already gone
+    }
+    if (now - info.mtimeMs < olderThan) continue;
+    await rm(path, { force: true });
+    removed.push(name);
+  }
+  return removed;
+}

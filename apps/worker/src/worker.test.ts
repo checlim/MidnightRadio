@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -30,8 +30,8 @@ const captureLog = () => {
 
 describe("loadWorkerConfig", () => {
   it("defaults to /data and a shutdown timeout under common platform kill timeouts", () => {
-    expect(loadWorkerConfig({})).toEqual({ dataDir: "/data", shutdownTimeoutMs: 4_000 });
-    expect(loadWorkerConfig({ DATA_DIR: " /tmp/x ", WORKER_SHUTDOWN_TIMEOUT_MS: "2500" })).toEqual({ dataDir: "/tmp/x", shutdownTimeoutMs: 2_500 });
+    expect(loadWorkerConfig({})).toEqual({ dataDir: "/data", renderCacheDir: "/data/render-cache", shutdownTimeoutMs: 4_000 });
+    expect(loadWorkerConfig({ DATA_DIR: " /tmp/x ", WORKER_SHUTDOWN_TIMEOUT_MS: "2500" })).toEqual({ dataDir: "/tmp/x", renderCacheDir: "/tmp/x/render-cache", shutdownTimeoutMs: 2_500 });
   });
 
   it("rejects malformed values without echoing them", () => {
@@ -59,7 +59,7 @@ describe("startWorker", () => {
     await w.stop();
     expect(seen).toEqual(["c1"]);
     expect(lines.map((l) => l.msg)).toEqual(["worker started", "worker stopped"]);
-    expect(lines[0]!.fields).toMatchObject({ jobKinds: ["render"], paidTts: false, paidLlm: false });
+    expect(lines[0]!.fields).toMatchObject({ jobKinds: ["render"], ttsEnabled: false, llmEnabled: false });
 
     const db = openDb(join(dataDir, DB_FILE)); // closed by stop(), reopenable
     expect(new JobQueue(db).get(id)!.state).toBe("done");
@@ -163,4 +163,70 @@ describe("main.ts process", () => {
     expect(line.message).toMatch(/GLOBAL_DAILY_LLM_TOKEN_LIMIT must be a non-negative integer/);
     expect(p.output()).not.toContain("hunter2");
   }, 30_000);
+});
+
+describe("startWorker: abandoned render temp files", () => {
+  const key = "a".repeat(64);
+  const temp = (jobId: string) => `${key}.${jobId}.0123456789ab.wav.tmp`;
+
+  it("removes old temp files of jobs that are not running, and keeps everything else", async () => {
+    const cache = join(dir, "render-cache");
+    mkdirSync(cache, { recursive: true });
+    // A job still running on another worker: its temp file is kept however old it is.
+    const setup = openDb(join(dir, DB_FILE));
+    const q = new JobQueue(setup);
+    const running = q.enqueue("render", "c-running");
+    q.claim(["render"]);
+    setup.close();
+    const old = new Date(Date.now() - 60 * 60_000);
+    for (const name of [temp("dead-job"), temp(running.id), `${key}.wav`, "notes.txt"]) {
+      writeFileSync(join(cache, name), "x");
+      utimesSync(join(cache, name), old, old);
+    }
+    writeFileSync(join(cache, temp("recent-job")), "x"); // too new: may still be being written
+
+    const { log, lines } = captureLog();
+    const w = startWorker({ env: { DATA_DIR: dir }, log, pollMs: 5, createHandlers: () => ({}) });
+    expect(await w.swept).toEqual([temp("dead-job")]);
+    await w.stop();
+    expect(readdirSync(cache).sort()).toEqual([temp(running.id), `${key}.wav`, temp("recent-job"), "notes.txt"].sort());
+    expect(lines.find((l) => l.msg === "removed abandoned render temp files")?.fields).toEqual({ count: 1 });
+  });
+
+  it("starts normally when there is no render cache yet", async () => {
+    const { log, lines } = captureLog();
+    const w = startWorker({ env: { DATA_DIR: dir }, log, pollMs: 5, createHandlers: () => ({}) });
+    expect(await w.swept).toEqual([]);
+    await w.stop();
+    expect(lines.some((l) => l.level === "warn" && l.msg.includes("sweep"))).toBe(false);
+  });
+});
+
+describe("startWorker: logging", () => {
+  it("masks the secret settings from its environment in every log line, including job errors", async () => {
+    const key = "sk-live-0123456789abcdefghij";
+    const passkey = "moonlit-ravens-1897";
+    const out: string[] = [];
+    let failed = false;
+    const w = startWorker({
+      env: { DATA_DIR: dir, LLM_API_KEY: key, UPLOAD_PASSKEY: passkey },
+      write: (l) => out.push(l),
+      pollMs: 5,
+      queueOptions: { maxAttempts: 1 },
+      createHandlers: () => ({
+        adapt: async () => {
+          failed = true;
+          throw new Error(`provider rejected key ${key} (passkey ${passkey})`);
+        },
+      }),
+    });
+    w.queue.enqueue("adapt", "c1");
+    while (!failed || !out.some((l) => l.includes("job error"))) await sleep(5);
+    await w.stop();
+    const all = out.join("\n");
+    expect(all).toContain("job error");
+    expect(all).not.toContain(key);
+    expect(all).not.toContain(passkey);
+    expect(all).toContain("[redacted]");
+  });
 });

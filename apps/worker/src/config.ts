@@ -1,13 +1,17 @@
+import { join } from "node:path";
 import { z } from "zod";
 
 export interface WorkerConfig {
-  /** Persistent volume holding the SQLite database (and, later, caches and exports). */
+  /** Persistent volume holding the SQLite database, the render cache and (later) exports. */
   dataDir: string;
+  /** `<dataDir>/render-cache`: the speech render cache (task 5.2). */
+  renderCacheDir: string;
   /** How long to wait for the current job to be released on SIGTERM before forcing exit. */
   shutdownTimeoutMs: number;
 }
 
 export const DB_FILE = "midnight-radio.db";
+export const RENDER_CACHE_DIR = "render-cache";
 
 // Fly.io's default kill timeout is 5 s and Docker's is 10 s; stay under both.
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 4_000;
@@ -39,5 +43,6 @@ export function loadWorkerConfig(env: Record<string, string | undefined> = proce
     });
     throw new Error(`invalid worker configuration: ${problems.join("; ")}`);
   }
-  return { dataDir: parsed.data.DATA_DIR, shutdownTimeoutMs: parsed.data.WORKER_SHUTDOWN_TIMEOUT_MS };
+  const dataDir = parsed.data.DATA_DIR;
+  return { dataDir, renderCacheDir: join(dataDir, RENDER_CACHE_DIR), shutdownTimeoutMs: parsed.data.WORKER_SHUTDOWN_TIMEOUT_MS };
 }

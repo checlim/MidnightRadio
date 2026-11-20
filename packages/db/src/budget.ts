@@ -4,9 +4,9 @@ import { z } from "zod";
 import { BudgetExceededError } from "./errors.js";
 
 export interface BudgetConfig {
-  /** Global TTS characters per UTC day. 0 disables paid TTS. */
+  /** Global TTS characters per UTC day (local render time is the cost). 0 disables TTS rendering. */
   dailyTtsChars: number;
-  /** Global LLM tokens (input + capped output) per UTC day. 0 disables paid LLM calls. */
+  /** Global LLM tokens (input + capped output) per UTC day. 0 disables LLM calls, which are paid API calls. */
   dailyLlmTokens: number;
   /** Operator ceiling on any Book's TTS budget; a user-chosen `books.char_budget` cannot exceed it. */
   bookTtsCharCeiling: number;
@@ -38,7 +38,7 @@ const BudgetEnvSchema = z.object({
 });
 
 /**
- * Read caps from the environment. Missing or "0" disables that kind of paid call (fail closed).
+ * Read caps from the environment. Missing or "0" disables that kind of metered call (fail closed).
  * A malformed value throws so a misconfigured deployment fails loudly at startup. Error messages
  * name the variable but never echo its value.
  */
@@ -89,7 +89,7 @@ export interface Spend {
   llmTokens: number;
 }
 
-export interface PaidCallResult<T> {
+export interface MeteredCallResult<T> {
   value: T;
   usage: Omit<ActualUsage, "wallMs">;
 }
@@ -117,7 +117,7 @@ const optNonNegInt = (n: number | undefined, name: string): number | undefined =
   n === undefined ? undefined : nonNegInt(n, name);
 
 /** Provider-reported usage is untrusted: drop malformed fields so they settle as the reserved amount. */
-function sanitiseUsage(u: PaidCallResult<unknown>["usage"] | undefined): Omit<ActualUsage, "wallMs"> {
+function sanitiseUsage(u: MeteredCallResult<unknown>["usage"] | undefined): Omit<ActualUsage, "wallMs"> {
   const out: Omit<ActualUsage, "wallMs"> = {};
   if (!u || typeof u !== "object") return out;
   if (isNonNegInt(u.ttsChars)) out.ttsChars = u.ttsChars;
@@ -143,7 +143,7 @@ const COUNTED_TTS = "CASE state WHEN 'settled' THEN actual_tts_chars WHEN 'relea
 const COUNTED_LLM = "CASE state WHEN 'settled' THEN actual_llm_tokens WHEN 'released' THEN 0 ELSE llm_tokens END";
 
 /**
- * Durable spend ledger. Every paid LLM/TTS call reserves its worst case first, inside a write
+ * Durable spend ledger. Every metered call (a paid LLM request or a local TTS render) reserves its worst case first, inside a write
  * transaction, so concurrent workers cannot overshoot caps. Outcomes:
  * - `settle`: provider responded; actual usage replaces the reservation and a `usage` row is written.
  * - `release`: provider provably did not bill (e.g. request rejected before processing).
@@ -179,7 +179,7 @@ export class BudgetLedger {
       const { dailyTtsChars, dailyLlmTokens } = this.config;
 
       if (tts > 0) {
-        if (dailyTtsChars <= 0) throw new BudgetExceededError("tts_disabled", "Paid voice rendering is disabled on this server.");
+        if (dailyTtsChars <= 0) throw new BudgetExceededError("tts_disabled", "Voice rendering is disabled on this server.");
         const book = this.db.prepare("SELECT char_budget FROM books WHERE id = ?").get(req.bookId) as { char_budget: number } | undefined;
         if (!book) throw new Error(`unknown book ${req.bookId}`);
         const bookLimit = Math.min(Number(book.char_budget), this.config.bookTtsCharCeiling);
@@ -191,7 +191,7 @@ export class BudgetLedger {
         }
       }
       if (llm > 0) {
-        if (dailyLlmTokens <= 0) throw new BudgetExceededError("llm_disabled", "Paid script adaptation is disabled on this server.");
+        if (dailyLlmTokens <= 0) throw new BudgetExceededError("llm_disabled", "Script adaptation is disabled on this server.");
         if (this.daySpend(day).llmTokens + llm > dailyLlmTokens) {
           throw new BudgetExceededError("daily_llm", "Today's script adaptation allowance is used up. Try again after midnight UTC.");
         }
@@ -272,7 +272,7 @@ export class BudgetLedger {
   }
 
   /**
-   * Reserve, run the paid call, then settle. On error: release if the error proves no charge
+   * Reserve, run the metered call, then settle. On error: release if the error proves no charge
    * (`billed === false`), otherwise keep the reservation as uncertain, then rethrow.
    *
    * Once the call has succeeded its result is always returned. If recording usage fails, the
@@ -281,13 +281,13 @@ export class BudgetLedger {
    */
   async withReservation<T>(
     req: ReservationRequest,
-    call: () => Promise<PaidCallResult<T>>,
+    call: () => Promise<MeteredCallResult<T>>,
     opts: { fence?: () => void; onSettleError?: (err: unknown) => void } = {},
   ): Promise<T> {
     const id = this.reserve(req, opts);
     const started = this.now();
     const elapsed = () => Math.max(0, this.now() - started);
-    let result: PaidCallResult<T>;
+    let result: MeteredCallResult<T>;
     try {
       result = await call();
     } catch (err) {

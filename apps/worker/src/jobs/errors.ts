@@ -15,3 +15,10 @@ export class PermanentJobError extends Error {
     this.name = "PermanentJobError";
   }
 }
+
+/**
+ * Errors that must stop a whole job rather than be recorded against one line. Pass as
+ * `renderSegments({ isFatal })`: once the lease is lost, another worker owns the job, so this one
+ * must stop rendering instead of retrying or recording failures it may no longer publish.
+ */
+export const isFatalJobError = (err: unknown): boolean => err instanceof LeaseLostError;
