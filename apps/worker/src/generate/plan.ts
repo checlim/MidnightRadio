@@ -48,10 +48,12 @@ export function slug(text: string, max = 40): string {
   return s || "book";
 }
 
+/** Station id of a book's episode: title slug, a short hash of the EPUB, and the episode number. */
+export const stationIdFor = (title: string, sourceHash: string, episodeNumber: number) => `${slug(title)}-${sourceHash.slice(0, 6)}-e${episodeNumber}`;
+
 export function planBook(book: IngestedBook, epubBytes: Uint8Array): BookPlan {
   const sourceHash = sha256Hex(epubBytes);
   const bookId = `bk-${sourceHash.slice(0, 16)}`;
-  const stationPrefix = `${slug(book.title)}-${sourceHash.slice(0, 6)}`;
   const episodes: PlannedEpisode[] = [];
   for (const chapter of book.chapters) {
     const quoteParse = parseQuotes(chapter.sourceText);
@@ -62,7 +64,7 @@ export function planBook(book: IngestedBook, epubBytes: Uint8Array): BookPlan {
       const episodeNumber = episodes.length + 1;
       episodes.push({
         chapterId: `${bookId}-c${chapter.idx + 1}${part.partCount > 1 ? `-p${part.part}` : ""}`,
-        stationId: `${stationPrefix}-e${episodeNumber}`,
+        stationId: stationIdFor(book.title, sourceHash, episodeNumber),
         episodeNumber,
         chapterNumber: chapter.idx + 1,
         title: part.label ? `${chapter.title} (${part.label})` : chapter.title,

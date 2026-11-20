@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { STUB_VOICE_CATALOGUE, SfxCatalogueSchema, VoiceCatalogueSchema, requireClonable } from "@midnight-radio/core";
+import { STUB_VOICE_CATALOGUE, SfxCatalogueSchema, VoiceCatalogueSchema, requireClonable, type VoiceCatalogue } from "@midnight-radio/core";
 import { createOpenAiCompatibleProvider, loadLlmConfig, loadStyleGuide } from "@midnight-radio/llm";
 import { QwenTtsProvider, StubProvider, loadQwenConfig, type TtsProvider } from "@midnight-radio/tts";
 import type { WorkerConfig } from "../config.js";
@@ -10,6 +10,12 @@ import { stubLlm } from "./stub-llm.js";
 
 /** The repository root (assets, style guide, web app), from this file's place in apps/worker. */
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+
+/** The voice catalogue generation casts from: the real one, or the stub one with the stub providers. */
+export function loadVoiceCatalogue(stubProviders: boolean, root = REPO_ROOT): VoiceCatalogue {
+  if (stubProviders) return STUB_VOICE_CATALOGUE;
+  return requireClonable(VoiceCatalogueSchema.parse(JSON.parse(readFileSync(join(root, "assets/voices/catalogue.json"), "utf8"))));
+}
 
 /**
  * Build what generation jobs need from the environment. Called only when generation is enabled.
@@ -31,7 +37,7 @@ export function createGenerationServices(env: Record<string, string | undefined>
     return { ...common, llm: stubLlm(), tts: async () => tts, voices: STUB_VOICE_CATALOGUE };
   }
 
-  const voices = requireClonable(VoiceCatalogueSchema.parse(JSON.parse(readFileSync(join(root, "assets/voices/catalogue.json"), "utf8"))));
+  const voices = loadVoiceCatalogue(false, root);
   const llmConfig = loadLlmConfig(env);
   if (!llmConfig) log("no LLM configured (LLM_API_KEY); casting and adaptation jobs will fail until it is set");
   const qwen = loadQwenConfig(env);

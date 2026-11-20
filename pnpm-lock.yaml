@@ -29,6 +29,15 @@ importers:
       '@midnight-radio/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@midnight-radio/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@midnight-radio/ingest':
+        specifier: workspace:*
+        version: link:../../packages/ingest
+      '@midnight-radio/worker':
+        specifier: workspace:*
+        version: link:../worker
       next:
         specifier: 16.4.6
         version: 16.4.6(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)

@@ -24,6 +24,8 @@ async function serve(page: Page, opts: { failAudio?: boolean } = {}) {
     opts.failAudio ? r.abort("failed") : r.fulfill({ body: readFileSync(join(FIXTURES, r.request().url().includes("-am") ? "am.mp3" : "clean.mp3")), contentType: "audio/mpeg" }),
   );
 }
+/** Any caption of the fixture episode: playback may already be past the first one when a check runs. */
+const ANY_LINE = /^(Good evening, listeners\.|Welcome to my house!|Count Dracula\?|The wolves howl below\.)$/;
 const player = (page: Page) => page.locator(".radio-layout");
 const slider = (page: Page) => page.getByRole("slider", { name: "Tuning" });
 
@@ -42,7 +44,7 @@ test("stays silent until the POWER switch, then tunes in the first station and p
   await expect(player(page)).toHaveAttribute("data-station", "dracula-1");
   await expect(player(page)).toHaveAttribute("data-wants-play", "true");
   await expect(page.locator(".now-playing .station")).toHaveText("Dracula \u2014 Episode 1");
-  await expect(page.locator(".now-playing .line")).toHaveText("Good evening, listeners.");
+  await expect(page.locator(".now-playing .line")).toHaveText(ANY_LINE);
   await expect(slider(page)).toHaveAttribute("aria-valuetext", "650 kilocycles, Dracula, episode 1: Jonathan Harker\u2019s Journal");
 });
 
@@ -73,11 +75,14 @@ test("tunes with the arrow keys and toggles play with Space, but never while typ
 
 test("says it is paused, and how to resume, even while a line is on screen", async ({ page }) => {
   await page.getByRole("button", { name: "Power" }).click();
-  await expect(page.locator(".now-playing .line")).toHaveText("Good evening, listeners.");
+  await expect(page.locator(".now-playing .line")).toHaveText(ANY_LINE);
   await slider(page).focus();
   await page.keyboard.press("Space");
   await expect(player(page)).toHaveAttribute("data-wants-play", "false");
-  await expect(page.locator(".now-playing .line")).toHaveText("Good evening, listeners.");
+  const shown = (await page.locator(".now-playing .line").textContent()) ?? "";
+  expect(shown).toMatch(ANY_LINE);
+  await page.waitForTimeout(2_500); // longer than one caption: a paused player must not move on
+  await expect(page.locator(".now-playing .line")).toHaveText(shown); // the line on screen stays while paused
   await expect(page.getByText("Paused. Press Space to listen.")).toBeVisible();
   await page.keyboard.press("Space");
   await expect(page.getByText("Paused. Press Space to listen.")).toHaveCount(0);
@@ -93,10 +98,10 @@ test("jumps to a transcript line and highlights the line playing", async ({ page
 test("announces lines to screen readers only when asked", async ({ page }) => {
   await page.getByRole("button", { name: "Power" }).click();
   const live = page.locator('[aria-live="polite"]');
-  await expect(page.locator(".now-playing .line")).toHaveText("Good evening, listeners.");
+  await expect(page.locator(".now-playing .line")).toHaveText(ANY_LINE);
   await expect(live).toHaveText("");
   await page.getByRole("checkbox", { name: "Announce lines for screen readers" }).check();
-  await expect(live).toHaveText("Announcer: Good evening, listeners.");
+  await expect(live).toHaveText(/^(Announcer|Count Dracula|Jonathan Harker|Narrator): /);
 });
 
 test("switches to Vintage AM and back with the tone knob", async ({ page }) => {

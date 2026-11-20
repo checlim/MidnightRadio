@@ -7,14 +7,17 @@
   "scripts": {
     "typecheck": "tsc -p . --noEmit",
     "test": "vitest run --passWithNoTests",
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
     "start": "next start",
     "demo:stub": "tsx scripts/stub-demo.ts",
     "e2e": "playwright test"
   },
   "dependencies": {
     "@midnight-radio/core": "workspace:*",
+    "@midnight-radio/db": "workspace:*",
+    "@midnight-radio/ingest": "workspace:*",
+    "@midnight-radio/worker": "workspace:*",
     "next": "16.4.6",
     "react": "19.3.1",
     "react-dom": "19.3.1",

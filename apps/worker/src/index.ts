@@ -5,3 +5,6 @@ export * from "./jobs/queue.js";
 export * from "./jobs/runner.js";
 export * from "./log.js";
 export * from "./worker.js";
+export * from "./generate/pipeline.js";
+export * from "./generate/plan.js";
+export { loadVoiceCatalogue } from "./generate/services.js";

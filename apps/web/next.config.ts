@@ -21,7 +21,11 @@ const csp = [
 const config: NextConfig = {
   reactStrictMode: true,
   // The shared station schema is TypeScript source in a workspace package.
-  transpilePackages: ["@midnight-radio/core"],
+  transpilePackages: ["@midnight-radio/core", "@midnight-radio/db"],
+  webpack(config: { resolve: { extensionAlias?: Record<string, string[]> } }) {
+    config.resolve.extensionAlias = { ".js": [".ts", ".tsx", ".js"] };
+    return config;
+  },
   poweredByHeader: false,
   async headers() {
     return [
