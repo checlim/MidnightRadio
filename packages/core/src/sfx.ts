@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MUSIC_CUES, type SceneBedSchema } from "./schema.js";
+import { MUSIC_CUES, ScriptSchema, type SceneBedSchema, type Script, type Segment } from "./schema.js";
 
 /**
  * The sound library catalogue, `assets/sfx/index.json` (Req 3.5, 4.1, 9.2; design "Script Schema").
@@ -117,7 +117,7 @@ export type SfxCatalogue = z.infer<typeof SfxCatalogueSchema>;
 
 /** A Script's reference to the library that cannot be played. The message is safe to show and to feed back to the adapter. */
 export interface SfxIssue {
-  code: "unknown_id" | "wrong_kind" | "not_loopable" | "unmapped_cue";
+  code: "unknown_id" | "wrong_kind" | "not_loopable" | "unmapped_cue" | "longer_than_asset";
   id: string;
   message: string;
 }
@@ -150,4 +150,67 @@ export function resolveMusicCue(catalogue: SfxCatalogue, index: ReadonlyMap<stri
   const entry = id === undefined ? undefined : index.get(id);
   if (!entry || entry.kind !== "music") return { code: "unmapped_cue", id: cue, message: `the "${cue}" music cue has no pinned music in the sound library yet` };
   return entry;
+}
+
+/** A sound problem found in a Script, with where it is (e.g. `scenes[1].segments[3]`). */
+export interface SfxAuditIssue extends SfxIssue {
+  path: string;
+}
+
+export interface SfxAudit {
+  /** The Script does not match the Script schema; sound references were not checked. */
+  schemaErrors: string[];
+  issues: SfxAuditIssue[];
+}
+
+/**
+ * Check every sound a Script uses against the library: discrete sounds and music cues exist and
+ * have the right kind, scene beds exist, match their kind and loop, and a requested duration is
+ * not longer than a recording that cannot loop. Scene timing itself is only known after rendering.
+ * Pure; shared by the validation gate (8.1) and the `sfx-library` MCP server.
+ */
+export function auditScriptSfx(catalogue: SfxCatalogue, script: Script): SfxAuditIssue[] {
+  const index = indexSfx(catalogue);
+  const issues: SfxAuditIssue[] = [];
+  const tooLong = (entry: SfxEntry, durationMs: number | undefined, id: string, path: string) => {
+    if (durationMs !== undefined && !entry.loopable && durationMs > entry.durationMs) {
+      issues.push({ code: "longer_than_asset", id, path, message: `"${id}" lasts ${entry.durationMs} ms and cannot loop, but ${durationMs} ms were asked for` });
+    }
+  };
+  const segment = (seg: Segment, path: string) => {
+    if (seg.kind === "sfx") {
+      const issue = checkSfxSegment(index, seg.sfxId);
+      if (issue) issues.push({ ...issue, path });
+      else tooLong(index.get(seg.sfxId)!, seg.durationMs, seg.sfxId, path);
+    } else if (seg.kind === "music") {
+      const resolved = resolveMusicCue(catalogue, index, seg.cue);
+      if ("code" in resolved) issues.push({ ...resolved, path });
+      else tooLong(resolved, seg.durationMs, resolved.id, path);
+    }
+  };
+  script.coldOpen.forEach((seg, i) => segment(seg, `coldOpen[${i}]`));
+  script.scenes.forEach((scene, si) => {
+    if (scene.ambience) {
+      const issue = checkSceneBed(index, scene.ambience);
+      if (issue) issues.push({ ...issue, path: `scenes[${si}].ambience` });
+    }
+    scene.segments.forEach((seg, i) => segment(seg, `scenes[${si}].segments[${i}]`));
+  });
+  script.close.forEach((seg, i) => segment(seg, `close[${i}]`));
+  return issues;
+}
+
+/** `auditScriptSfx` for untrusted text: parse the JSON and the Script schema first. */
+export function auditScriptSfxJson(catalogue: SfxCatalogue, json: string): SfxAudit {
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return { schemaErrors: ["the Script is not valid JSON"], issues: [] };
+  }
+  const parsed = ScriptSchema.safeParse(value);
+  if (!parsed.success) {
+    return { schemaErrors: parsed.error.issues.slice(0, 20).map((i) => `${i.path.length ? i.path.join(".") : "(top)"}: ${i.message}`), issues: [] };
+  }
+  return { schemaErrors: [], issues: auditScriptSfx(catalogue, parsed.data) };
 }

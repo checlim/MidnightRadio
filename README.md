@@ -54,7 +54,7 @@ packages/
 services/
   local-audio/      Local Python host for Qwen3-TTS (built, Apple Silicon) and the reference server for the sound-effect API, used only on the generation machine
 mcp/
-  sfx-library/      MCP server for curating CC0 sound assets in Kiro (planned)
+  sfx-library/      MCP server (stdio) over the sound library: search, details, music cues, Script sound audit
 fixtures/
   books/            Public-domain Standard Ebooks EPUBs, checksum-pinned, with demo selections (manifest.json)
 .kiro/
@@ -129,7 +129,9 @@ This project is developed spec-first in [Kiro](https://kiro.dev):
 - **Specs:** EARS-format [requirements](.kiro/specs/midnight-radio/requirements.md), a [design](.kiro/specs/midnight-radio/design.md), and a [task plan](.kiro/specs/midnight-radio/tasks.md) traced to requirement IDs.
 - **Steering:** [`product.md`](.kiro/steering/product.md) and [`tech.md`](.kiro/steering/tech.md) are always included. [`radio-voice.md`](.kiro/steering/radio-voice.md), the 1940s radio-script style guide, applies to `packages/llm/**`.
 
-Agent hooks, the `sfx-library` MCP server and a `script-auditor` custom agent are planned and will be documented here once they exist.
+- **MCP server:** `mcp/sfx-library` serves four read-only tools over `assets/sfx/index.json`: `search_sfx`, `get_sfx`, `list_music_cues` and `audit_script_sfx`. The audit uses the same checks as the pipeline (`packages/core/src/sfx.ts`). Start it with `node mcp/sfx-library/bin/sfx-library.mjs`; register it in `.kiro/settings/mcp.json` to use it in Kiro.
+- **Custom agent:** [`script-auditor`](.kiro/agents/script-auditor.md) checks a Script's sounds with those tools and suggests valid replacements. It is read-only and brings its own copy of the server.
+- Agent hooks are planned and will be documented here once they exist.
 
 ## Content and rights
 

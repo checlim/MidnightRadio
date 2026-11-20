@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { SfxCatalogueSchema, checkSceneBed, checkSfxSegment, indexSfx, resolveMusicCue, type SfxCatalogue, type SfxEntry } from "./sfx.js";
+import { ScriptSchema } from "./schema.js";
+import { SfxCatalogueSchema, auditScriptSfx, auditScriptSfxJson, checkSceneBed, checkSfxSegment, indexSfx, resolveMusicCue, type SfxCatalogue, type SfxEntry } from "./sfx.js";
 
 const H = "a".repeat(64);
 const generated = { type: "generated", model: "MOSS-SoundEffect-v2.0", revision: "e35df4d", licence: "Apache-2.0", prompt: "A heavy door creaks open.", seed: 1940, originalSha256: "b".repeat(64), generatedAt: "2026-11-20T10:00:00Z" } as const;
@@ -121,5 +122,61 @@ describe("checking a Script's references", () => {
       }),
       { numRuns: 300 },
     );
+  });
+});
+
+describe("auditScriptSfx", () => {
+  const c = SfxCatalogueSchema.parse(catalogue());
+  const script = (patch: Record<string, unknown> = {}) => ({
+    bookId: "dracula",
+    chapterId: "ch1",
+    episodeNumber: 1,
+    coldOpen: [{ kind: "announcer", text: "Good evening." }, { kind: "music", cue: "theme", durationMs: 4000 }],
+    scenes: [
+      {
+        id: "s1",
+        ambience: { kind: "sfx", id: "rain" },
+        segments: [{ kind: "narration", text: "The door opened." }, { kind: "sfx", sfxId: "door_creak", durationMs: 3000 }, { kind: "dialogue", speaker: "Count Dracula", text: "Welcome." }],
+      },
+    ],
+    close: [{ kind: "announcer", text: "Tune in next time." }, { kind: "music", cue: "theme" }],
+    ...patch,
+  });
+  const audit = (s: unknown) => auditScriptSfxJson(c, JSON.stringify(s));
+
+  it("passes a Script whose sounds all resolve", () => {
+    expect(audit(script())).toEqual({ schemaErrors: [], issues: [] });
+    expect(auditScriptSfx(c, ScriptSchema.parse(script()))).toEqual([]);
+  });
+
+  it("reports every unusable reference with where it is", () => {
+    const s = script({
+      coldOpen: [{ kind: "announcer", text: "Good evening." }, { kind: "music", cue: "sting" }],
+      scenes: [
+        { id: "s1", ambience: { kind: "sfx", id: "door_creak" }, segments: [{ kind: "sfx", sfxId: "lightning" }, { kind: "sfx", sfxId: "main_theme" }] },
+        { id: "s2", ambience: { kind: "music", id: "rain" }, segments: [{ kind: "sfx", sfxId: "door_creak", durationMs: 9000 }, { kind: "sfx", sfxId: "rain", durationMs: 60_000 }] },
+      ],
+    });
+    expect(audit(s).issues.map((i) => [i.path, i.code, i.id])).toEqual([
+      ["coldOpen[1]", "unmapped_cue", "sting"],
+      ["scenes[0].ambience", "not_loopable", "door_creak"],
+      ["scenes[0].segments[0]", "unknown_id", "lightning"],
+      ["scenes[0].segments[1]", "wrong_kind", "main_theme"],
+      ["scenes[1].ambience", "wrong_kind", "rain"],
+      ["scenes[1].segments[0]", "longer_than_asset", "door_creak"],
+      // rain loops, so it may run longer than its file
+    ]);
+    expect(audit(s).issues.find((i) => i.code === "longer_than_asset")!.message).toBe('"door_creak" lasts 5000 ms and cannot loop, but 9000 ms were asked for');
+  });
+
+  it("checks music cue durations against the pinned asset", () => {
+    const s = script({ coldOpen: [{ kind: "announcer", text: "Good evening." }, { kind: "music", cue: "theme", durationMs: 6000 }] });
+    expect(audit(s).issues).toEqual([expect.objectContaining({ path: "coldOpen[1]", code: "longer_than_asset", id: "main_theme" })]);
+  });
+
+  it("reports schema errors instead of checking sounds when the Script is malformed", () => {
+    expect(audit({ ...script(), close: [{ kind: "announcer", text: "Bye." }] }).schemaErrors).toEqual(["close: close must contain a theme music cue"]);
+    expect(audit({ ...script(), scenes: [] }).schemaErrors[0]).toMatch(/^scenes:/);
+    expect(auditScriptSfxJson(c, "{not json")).toEqual({ schemaErrors: ["the Script is not valid JSON"], issues: [] });
   });
 });

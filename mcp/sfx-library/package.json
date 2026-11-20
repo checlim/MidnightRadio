@@ -7,5 +7,10 @@
   "scripts": {
     "typecheck": "tsc -p .",
     "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@midnight-radio/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "^4.6.7"
   }
 }
