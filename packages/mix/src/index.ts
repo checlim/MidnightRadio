@@ -1,5 +1,6 @@
 export * from "./assemble-sfx.js";
 export * from "./envelope.js";
+export * from "./episode.js";
 export * from "./ffmpeg.js";
 export * from "./master.js";
 export * from "./render.js";
