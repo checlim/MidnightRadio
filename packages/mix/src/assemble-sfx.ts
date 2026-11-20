@@ -2,10 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { SFX_LICENCES, SfxCatalogueSchema, type SfxCatalogue, type SfxEntry, type SfxLicence } from "@midnight-radio/core";
+import { MUSIC_CUES, SFX_LICENCES, SfxCatalogueSchema, type SfxCatalogue, type SfxEntry, type SfxLicence } from "@midnight-radio/core";
 import { validateWav } from "@midnight-radio/tts";
 import { z } from "zod";
-import { runFfmpeg, type FfmpegOptions } from "./ffmpeg.js";
+import { probeAudio, runFfmpeg, type FfmpegOptions } from "./ffmpeg.js";
 
 /**
  * Turn the chosen foley takes into the sound library (Task 6.1).
@@ -117,16 +117,33 @@ export const titleFor = (id: string) => id.charAt(0).toUpperCase() + id.slice(1)
 /** Length of the crossfade that closes a bed's loop: a tenth of the take, between 0.5 and 2 seconds. */
 export const loopCrossfadeS = (durationS: number) => Math.min(2, Math.max(0.5, durationS / 10));
 
-/** The filter graph for one take, up to (not including) the gain. Output label `[shaped]`. */
-export function shapeGraph(cue: Cue): string {
-  if (!cue.loopable) {
-    const outStart = (cue.durationSec - FADE_OUT_S).toFixed(3);
-    return `[0:a]${RESAMPLE},afade=t=in:d=${FADE_IN_S},afade=t=out:st=${outStart}:d=${FADE_OUT_S}[shaped]`;
+/** How one source file becomes one library sound. */
+export interface Shape {
+  id: string;
+  /** Length of the source part used, in seconds. */
+  durationS: number;
+  loopable: boolean;
+  /** Use only the part from here (seconds); the whole file when absent. */
+  startS?: number;
+  /** Fade-out for sounds that do not loop (default 30 ms; music endings want longer). */
+  fadeOutS?: number;
+}
+
+const shapeOf = (cue: Cue): Shape => ({ id: cue.id, durationS: cue.durationSec, loopable: cue.loopable });
+
+/** The filter graph for one source, up to (not including) the gain. Output label `[shaped]`. */
+export function shapeGraph(shape: Shape): string {
+  const trim = shape.startS !== undefined ? `atrim=start=${shape.startS.toFixed(3)}:duration=${shape.durationS.toFixed(3)},asetpts=PTS-STARTPTS,` : "";
+  const head = `[0:a]${trim}${RESAMPLE}`;
+  if (!shape.loopable) {
+    const fadeOut = shape.fadeOutS ?? FADE_OUT_S;
+    const outStart = (shape.durationS - fadeOut).toFixed(3);
+    return `${head},afade=t=in:d=${FADE_IN_S},afade=t=out:st=${outStart}:d=${fadeOut}[shaped]`;
   }
-  const f = loopCrossfadeS(cue.durationSec).toFixed(3);
-  // body = take[f:], head = take[:f]; crossfading body's end into head makes the last sample
+  const f = loopCrossfadeS(shape.durationS).toFixed(3);
+  // body = source[f:], head = source[:f]; crossfading body's end into head makes the last sample
   // continue into the first, so the bed loops without a seam.
-  return `[0:a]${RESAMPLE},asplit=2[a][b];[a]atrim=end=${f},asetpts=PTS-STARTPTS[head];[b]atrim=start=${f},asetpts=PTS-STARTPTS[body];[body][head]acrossfade=d=${f}:c1=qsin:c2=qsin[shaped]`;
+  return `${head},asplit=2[a][b];[a]atrim=end=${f},asetpts=PTS-STARTPTS[head];[b]atrim=start=${f},asetpts=PTS-STARTPTS[body];[body][head]acrossfade=d=${f}:c1=qsin:c2=qsin[shaped]`;
 }
 
 /** 16-bit samples of a validated mono WAV. */
@@ -171,18 +188,18 @@ const peakDbOf = (samples: Int16Array) => {
   return peak === 0 ? -Infinity : 20 * Math.log10(peak / 32768);
 };
 
-async function processTake(cue: Cue, takePath: string, outPath: string, ff: FfmpegOptions): Promise<{ bytes: Uint8Array; samples: Int16Array }> {
-  const graph = shapeGraph(cue);
+async function processAudio(shape: Shape, sourcePath: string, outPath: string, ff: FfmpegOptions): Promise<{ bytes: Uint8Array; samples: Int16Array }> {
+  const graph = shapeGraph(shape);
   // Pass 1: measure the shaped signal's peak (in float, before any rounding).
-  const measured = await runFfmpeg({ inputs: [{ path: takePath }], filter: { type: "complex", graph: `${graph};[shaped]astats=metadata=0:measure_overall=Peak_level:measure_perchannel=none[m]` }, outputOptions: ["-map", "[m]"], output: null, logLevel: "info" }, ff);
+  const measured = await runFfmpeg({ inputs: [{ path: sourcePath }], filter: { type: "complex", graph: `${graph};[shaped]astats=metadata=0:measure_overall=Peak_level:measure_perchannel=none[m]` }, outputOptions: ["-map", "[m]"], output: null, logLevel: "info" }, ff);
   const match = /Peak level dB:\s*(-?[\d.]+|-inf)/.exec(measured.log);
-  if (!match || match[1] === "-inf") throw new AssembleError(`${cue.id}: the take is silent after conversion`);
+  if (!match || match[1] === "-inf") throw new AssembleError(`${shape.id}: the sound is silent after conversion`);
   const gainDb = (TARGET_PEAK_DB - Number(match[1])).toFixed(4);
   // Pass 2: the same chain plus the gain, written as 24 kHz mono 16-bit with a stable header.
-  const tmp = join(dirname(outPath), `.${cue.id}.${randomBytes(6).toString("hex")}.wav`);
+  const tmp = join(dirname(outPath), `.${shape.id}.${randomBytes(6).toString("hex")}.wav`);
   try {
     await mkdir(dirname(outPath), { recursive: true });
-    await runFfmpeg({ inputs: [{ path: takePath }], filter: { type: "complex", graph: `${graph};[shaped]volume=${gainDb}dB[out]` }, outputOptions: ["-map", "[out]", "-ac", "1", "-c:a", "pcm_s16le", ...BITEXACT], output: tmp }, ff);
+    await runFfmpeg({ inputs: [{ path: sourcePath }], filter: { type: "complex", graph: `${graph};[shaped]volume=${gainDb}dB[out]` }, outputOptions: ["-map", "[out]", "-ac", "1", "-c:a", "pcm_s16le", ...BITEXACT], output: tmp }, ff);
     const bytes = new Uint8Array(await readFile(tmp));
     return { bytes, samples: samplesOf(bytes) };
   } finally {
@@ -190,18 +207,18 @@ async function processTake(cue: Cue, takePath: string, outPath: string, ff: Ffmp
   }
 }
 
-function checkResult(cue: Cue, samples: Int16Array): void {
+function checkResult(shape: Shape, samples: Int16Array): void {
   const durationS = samples.length / WORKING_RATE;
-  const expected = cue.loopable ? cue.durationSec - loopCrossfadeS(cue.durationSec) : cue.durationSec;
-  if (Math.abs(durationS - expected) > 0.05) throw new AssembleError(`${cue.id}: the result is ${durationS.toFixed(3)} s, expected ${expected.toFixed(3)} s`);
+  const expected = shape.loopable ? shape.durationS - loopCrossfadeS(shape.durationS) : shape.durationS;
+  if (Math.abs(durationS - expected) > 0.05) throw new AssembleError(`${shape.id}: the result is ${durationS.toFixed(3)} s, expected ${expected.toFixed(3)} s`);
   const peak = peakDbOf(samples);
-  if (!(Math.abs(peak - TARGET_PEAK_DB) <= 0.3)) throw new AssembleError(`${cue.id}: the peak is ${peak.toFixed(2)} dBFS, expected ${TARGET_PEAK_DB} dBFS`);
-  if (cue.loopable) {
+  if (!(Math.abs(peak - TARGET_PEAK_DB) <= 0.3)) throw new AssembleError(`${shape.id}: the peak is ${peak.toFixed(2)} dBFS, expected ${TARGET_PEAK_DB} dBFS`);
+  if (shape.loopable) {
     const ratio = loopSeamRatio(samples);
-    if (ratio > 1) throw new AssembleError(`${cue.id}: the loop point jumps ${ratio.toFixed(2)}× more than anything in the bed; it would click when looped`);
+    if (ratio > 1) throw new AssembleError(`${shape.id}: the loop point jumps ${ratio.toFixed(2)}× more than anything in the bed; it would click when looped`);
   } else {
     const edge = 0.01 * 32768;
-    if (Math.abs(samples[0]!) > edge || Math.abs(samples[samples.length - 1]!) > edge) throw new AssembleError(`${cue.id}: the sound starts or ends abruptly (a click)`);
+    if (Math.abs(samples[0]!) > edge || Math.abs(samples[samples.length - 1]!) > edge) throw new AssembleError(`${shape.id}: the sound starts or ends abruptly (a click)`);
   }
 }
 
@@ -235,7 +252,8 @@ export function attributionBlock(catalogue: SfxCatalogue): string {
     lines.push("", "| Sound | File | Source | Licence |", "|---|---|---|---|");
     for (const e of rows) {
       const s = e.source;
-      const source = s.type === "generated" ? `generated, seed ${s.seed}` : s.type === "cc0" ? `<${s.url}>${s.author ? ` by ${cell(s.author)}` : ""}` : `made for the project by ${cell(s.author)}`;
+      const excerpt = s.type === "cc0" && s.excerpt ? `, excerpt ${(s.excerpt.startMs / 1000).toFixed(1)}–${((s.excerpt.startMs + s.excerpt.durationMs) / 1000).toFixed(1)} s` : "";
+      const source = s.type === "generated" ? `generated, seed ${s.seed}` : s.type === "cc0" ? `<${s.url}>${s.author ? ` by ${cell(s.author)}` : ""}${excerpt}` : `made for the project by ${cell(s.author)}`;
       lines.push(`| ${cell(e.title)} (\`${e.id}\`) | \`assets/sfx/${e.path}\` | ${source} | ${s.licence} |`);
     }
   }
@@ -256,13 +274,32 @@ export function updateAttribution(markdown: string, block: string): string {
   return `${markdown.slice(0, bodyStart)}\n${block}\n${markdown.slice(bodyEnd)}`;
 }
 
+/** The current `index.json`, or an empty library. */
+async function loadLibrary(sfxDir: string): Promise<SfxCatalogue> {
+  const indexPath = join(sfxDir, "index.json");
+  return existsSync(indexPath) ? parse(SfxCatalogueSchema, await readJson(indexPath, "index.json"), "index.json") : { version: 1, id: "midnight-radio-sfx-empty", entries: [], musicCues: {} };
+}
+
+/**
+ * Validate the new library as a whole, then write the sound files, `index.json` and the
+ * attribution block. Nothing is written if the library would be invalid.
+ */
+async function writeLibrary(paths: AssemblePaths, entries: SfxEntry[], musicCues: SfxCatalogue["musicCues"], files: { path: string; bytes: Uint8Array }[]): Promise<SfxCatalogue> {
+  const sorted = [...entries].sort((a, b) => (a.id < b.id ? -1 : 1));
+  const catalogue = parse(SfxCatalogueSchema, { version: 1, id: catalogueIdFor(sorted, musicCues), entries: sorted, musicCues }, "the new index.json");
+  const attribution = updateAttribution(await readFile(paths.attribution, "utf8"), attributionBlock(catalogue));
+  for (const f of files) await writeAtomic(f.path, f.bytes);
+  await writeAtomic(join(paths.sfxDir, "index.json"), `${JSON.stringify(catalogue, null, 2)}\n`);
+  await writeAtomic(paths.attribution, attribution);
+  return catalogue;
+}
+
 /** Run the whole step. Throws AssembleError (nothing is written to index.json or ATTRIBUTION.md) if any pick is unusable. */
 export async function assembleSfx(paths: AssemblePaths, ff: FfmpegOptions = {}): Promise<AssembleReport> {
   const prompts = parse(PromptsSchema, await readJson(join(paths.sfxDir, "prompts.json"), "prompts.json"), "prompts.json");
   const picks = parse(PicksSchema, await readJson(join(paths.sfxDir, "picks.json"), "picks.json"), "picks.json");
   const takes = parse(TakesSchema, await readJson(join(paths.candidatesDir, "takes.json"), "the candidates' takes.json"), "takes.json");
-  const indexPath = join(paths.sfxDir, "index.json");
-  const existing: SfxCatalogue = existsSync(indexPath) ? parse(SfxCatalogueSchema, await readJson(indexPath, "index.json"), "index.json") : { version: 1, id: "midnight-radio-sfx-empty", entries: [], musicCues: {} };
+  const existing = await loadLibrary(paths.sfxDir);
 
   const cues = new Map(prompts.cues.map((c) => [c.id, c]));
   const unknown = Object.keys(picks.picks).filter((id) => !cues.has(id));
@@ -302,8 +339,9 @@ export async function assembleSfx(paths: AssemblePaths, ff: FfmpegOptions = {}):
   for (const { cue, take, takePath } of work) {
     const rel = `${cue.loopable ? "beds" : "foley"}/${cue.id}.wav`;
     const out = join(paths.sfxDir, rel);
-    const { bytes, samples } = await processTake(cue, takePath, out, ff);
-    checkResult(cue, samples);
+    const shape = shapeOf(cue);
+    const { bytes, samples } = await processAudio(shape, takePath, out, ff);
+    checkResult(shape, samples);
     files.push({ path: out, bytes });
     const durationMs = Math.round((samples.length / WORKING_RATE) * 1000);
     entries.set(cue.id, {
@@ -331,12 +369,87 @@ export async function assembleSfx(paths: AssemblePaths, ff: FfmpegOptions = {}):
     assembled.push({ id: cue.id, path: rel, durationMs, possibleClicks: findClicks(samples, WORKING_RATE) });
   }
 
-  const sorted = [...entries.values()].sort((a, b) => (a.id < b.id ? -1 : 1));
-  const catalogue = parse(SfxCatalogueSchema, { version: 1, id: catalogueIdFor(sorted, existing.musicCues), entries: sorted, musicCues: existing.musicCues }, "the new index.json");
-  const attribution = updateAttribution(await readFile(paths.attribution, "utf8"), attributionBlock(catalogue));
-
-  for (const f of files) await writeAtomic(f.path, f.bytes);
-  await writeAtomic(indexPath, `${JSON.stringify(catalogue, null, 2)}\n`);
-  await writeAtomic(paths.attribution, attribution);
+  const catalogue = await writeLibrary(paths, [...entries.values()], existing.musicCues, files);
   return { catalogueId: catalogue.id, assembled, skipped: prompts.cues.filter((c) => picks.picks[c.id] == null).map((c) => c.id) };
+}
+
+export interface ImportOptions {
+  /** The downloaded CC0 file (any format ffmpeg reads). */
+  file: string;
+  id: string;
+  kind: "sfx" | "music";
+  title: string;
+  /** The page that states the CC0 dedication (https). */
+  sourceUrl: string;
+  author?: string;
+  /** Use only part of the file (seconds). */
+  startS?: number;
+  durationS?: number;
+  loopable?: boolean;
+  /** Fade-out in seconds for sounds that do not loop; default 1 s for music, 30 ms otherwise. */
+  fadeOutS?: number;
+  /** Pin this music as the asset for a Script music cue. */
+  cue?: (typeof MUSIC_CUES)[number];
+  tags?: string[];
+}
+
+/**
+ * Add one CC0 sound or piece of music to the library: trim, convert, shape and normalise it like
+ * a generated take, record its source page, author, original hash and excerpt, and optionally pin
+ * it to a music cue. Re-importing the same id from the same source page replaces it (to adjust the
+ * excerpt); any other clash is refused. You confirm the CC0 dedication on the source page first.
+ */
+export async function importSfx(paths: Omit<AssemblePaths, "candidatesDir">, opts: ImportOptions, ff: FfmpegOptions = {}): Promise<AssembledSound & { catalogueId: string }> {
+  const id = parse(cueId, opts.id, "--id");
+  if (opts.cue && opts.kind !== "music") throw new AssembleError(`only music can be pinned to the ${opts.cue} cue`);
+  if (opts.cue && !(MUSIC_CUES as readonly string[]).includes(opts.cue)) throw new AssembleError(`unknown music cue "${opts.cue}"; use theme, sting or transition`);
+  const source = await readFile(opts.file).catch(() => {
+    throw new AssembleError(`cannot read ${opts.file}`);
+  });
+  const probe = await probeAudio(opts.file, ff);
+  const startS = opts.startS ?? 0;
+  const available = probe.durationMs / 1000 - startS;
+  if (startS < 0 || available < 0.1) throw new AssembleError(`${id}: the file is ${(probe.durationMs / 1000).toFixed(2)} s long, so it has nothing after ${startS} s`);
+  const durationS = opts.durationS ?? Math.floor(available * 1000) / 1000;
+  if (durationS < 0.1 || durationS > available + 0.001) throw new AssembleError(`${id}: asked for ${durationS} s from ${startS} s, but only ${available.toFixed(2)} s are there`);
+  const loopable = opts.loopable ?? false;
+  const fadeOutS = opts.fadeOutS ?? (opts.kind === "music" ? 1 : FADE_OUT_S);
+  if (!loopable && (fadeOutS < 0.005 || fadeOutS > durationS / 2)) throw new AssembleError(`${id}: the fade-out must be between 5 ms and half the sound`);
+
+  const existing = await loadLibrary(paths.sfxDir);
+  const old = existing.entries.find((e) => e.id === id);
+  if (old && !(old.source.type === "cc0" && old.source.url === opts.sourceUrl)) {
+    throw new AssembleError(`${id} is already in the library (${old.source.type}${old.source.type === "cc0" ? ` from ${old.source.url}` : ""}); choose another id`);
+  }
+
+  const shape: Shape = { id, durationS, loopable, startS, fadeOutS };
+  const rel = `${opts.kind === "music" ? "music" : loopable ? "beds" : "foley"}/${id}.wav`;
+  const out = join(paths.sfxDir, rel);
+  const { bytes, samples } = await processAudio(shape, opts.file, out, ff);
+  checkResult(shape, samples);
+  const durationMs = Math.round((samples.length / WORKING_RATE) * 1000);
+  const trimmed = startS > 0 || durationS < probe.durationMs / 1000 - 0.001;
+  const entry = {
+    id,
+    kind: opts.kind,
+    title: opts.title,
+    path: rel,
+    sha256: sha256(bytes),
+    durationMs,
+    loopable,
+    peakDb: Math.round(peakDbOf(samples) * 100) / 100,
+    tags: opts.tags ?? [],
+    source: {
+      type: "cc0" as const,
+      url: opts.sourceUrl,
+      ...(opts.author ? { author: opts.author } : {}),
+      licence: "CC0-1.0" as const,
+      originalSha256: sha256(source),
+      ...(trimmed ? { excerpt: { startMs: Math.round(startS * 1000), durationMs: Math.round(durationS * 1000) } } : {}),
+    },
+  };
+  const entries = [...existing.entries.filter((e) => e.id !== id), entry as SfxEntry];
+  const musicCues = opts.cue ? { ...existing.musicCues, [opts.cue]: id } : existing.musicCues;
+  const catalogue = await writeLibrary({ ...paths, candidatesDir: "" }, entries, musicCues, [{ path: out, bytes }]);
+  return { id, path: rel, durationMs, possibleClicks: findClicks(samples, WORKING_RATE), catalogueId: catalogue.id };
 }

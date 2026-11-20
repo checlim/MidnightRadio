@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { SfxCatalogueSchema, type SfxCatalogue } from "@midnight-radio/core";
 import { validateWav } from "@midnight-radio/tts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AssembleError, assembleSfx, attributionBlock, catalogueIdFor, findClicks, loopCrossfadeS, loopSeamRatio, titleFor, updateAttribution } from "./assemble-sfx.js";
+import { AssembleError, assembleSfx, attributionBlock, importSfx, catalogueIdFor, findClicks, loopCrossfadeS, loopSeamRatio, titleFor, updateAttribution } from "./assemble-sfx.js";
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 if (process.env.REQUIRE_FFMPEG === "1" && !hasFfmpeg) throw new Error("REQUIRE_FFMPEG=1 but ffmpeg is not on the PATH");
@@ -215,5 +215,97 @@ describe.skipIf(!hasFfmpeg)("assembleSfx (real ffmpeg)", () => {
     const curated = { id: "rain", kind: "sfx", title: "Rain", path: "beds/curated_rain.wav", sha256: "c".repeat(64), durationMs: 20_000, loopable: true, peakDb: -1, tags: [], source: { type: "cc0", url: "https://freesound.org/s/2/", licence: "CC0-1.0" } };
     await writeFile(join(paths.sfxDir, "index.json"), JSON.stringify({ version: 1, id: "old", entries: [curated], musicCues: {} }));
     await expect(assembleSfx(paths, { log: () => {} })).rejects.toThrow(/already in the library as a cc0 sound/);
+  });
+});
+
+function stereoWav(seconds: number, rate: number, f: (t: number) => number): Buffer {
+  const frames = Math.round(seconds * rate);
+  const data = Buffer.alloc(frames * 4);
+  for (let i = 0; i < frames; i++) {
+    const v = Math.round(f(i / rate) * 32767);
+    data.writeInt16LE(v, i * 4);
+    data.writeInt16LE(v, i * 4 + 2);
+  }
+  const h = Buffer.alloc(44);
+  h.write("RIFF", 0);
+  h.writeUInt32LE(36 + data.length, 4);
+  h.write("WAVEfmt ", 8);
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(2, 22);
+  h.writeUInt32LE(rate, 24);
+  h.writeUInt32LE(rate * 4, 28);
+  h.writeUInt16LE(4, 32);
+  h.writeUInt16LE(16, 34);
+  h.write("data", 36);
+  h.writeUInt32LE(data.length, 40);
+  return Buffer.concat([h, data]);
+}
+
+describe.skipIf(!hasFfmpeg)("importSfx (real ffmpeg)", () => {
+  let root: string;
+  let paths: { sfxDir: string; attribution: string };
+  let organ: string;
+  const SOURCE = "https://commons.wikimedia.org/wiki/File:Organ.wav";
+  const organBytes = stereoWav(10, 44_100, (t) => 0.5 * Math.sin(2 * Math.PI * 110 * t) + 0.2 * Math.sin(2 * Math.PI * 165.3 * t));
+  const music = { id: "main_theme", kind: "music" as const, title: "Main theme", sourceUrl: SOURCE, author: "Some Organist" };
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "mr-import-"));
+    paths = { sfxDir: join(root, "assets/sfx"), attribution: join(root, "ATTRIBUTION.md") };
+    await mkdir(paths.sfxDir, { recursive: true });
+    organ = join(root, "organ.wav");
+    await writeFile(organ, organBytes);
+    await writeFile(paths.attribution, "# Attribution\n\n## Sound effects and music\n\nNone bundled yet.\n");
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const index = async () => SfxCatalogueSchema.parse(JSON.parse(await readFile(join(paths.sfxDir, "index.json"), "utf8")));
+  const quiet = { log: () => {} };
+
+  it("imports an excerpt of a stereo file as 24 kHz mono music, records its source and pins the cue", async () => {
+    const r = await importSfx(paths, { ...music, file: organ, startS: 2, durationS: 5, cue: "theme" }, quiet);
+    expect(r).toMatchObject({ id: "main_theme", path: "music/main_theme.wav", durationMs: 5000 });
+    const cat = await index();
+    expect(cat.musicCues).toEqual({ theme: "main_theme" });
+    expect(cat.entries[0]).toMatchObject({ kind: "music", loopable: false, source: { type: "cc0", url: SOURCE, author: "Some Organist", licence: "CC0-1.0", originalSha256: sha(organBytes), excerpt: { startMs: 2000, durationMs: 5000 } } });
+    const out = await readFile(join(paths.sfxDir, "music/main_theme.wav"));
+    const info = validateWav(out, { sampleRate: 24_000, channels: 1, bitsPerSample: 16 });
+    expect(info.durationMs).toBe(5000);
+    const s = new Int16Array(out.buffer.slice(out.byteOffset + info.dataOffset, out.byteOffset + info.dataOffset + info.dataLength));
+    expect(Math.abs(s[s.length - 1]!)).toBeLessThan(330); // 1 s musical fade-out
+    expect(await readFile(paths.attribution, "utf8")).toContain("| Main theme (`main_theme`) | `assets/sfx/music/main_theme.wav` | <https://commons.wikimedia.org/wiki/File:Organ.wav> by Some Organist, excerpt 2.0–7.0 s | CC0-1.0 |");
+  });
+
+  it("imports the whole file when no excerpt is given, and makes a looping bed seamless", async () => {
+    await importSfx(paths, { id: "organ_drone", kind: "sfx", title: "Organ drone", sourceUrl: SOURCE, file: organ, loopable: true }, quiet);
+    const entry = (await index()).entries[0]!;
+    expect(entry).toMatchObject({ path: "beds/organ_drone.wav", loopable: true, durationMs: 9000 });
+    expect(entry.source).not.toHaveProperty("excerpt");
+    const out = await readFile(join(paths.sfxDir, entry.path));
+    const info = validateWav(out);
+    expect(loopSeamRatio(new Int16Array(out.buffer.slice(out.byteOffset + info.dataOffset, out.byteOffset + info.dataOffset + info.dataLength)))).toBeLessThanOrEqual(1);
+  });
+
+  it("re-importing the same id from the same source replaces it; anything else with that id is refused", async () => {
+    await importSfx(paths, { ...music, file: organ, durationS: 4 }, quiet);
+    await importSfx(paths, { ...music, file: organ, startS: 1, durationS: 3 }, quiet);
+    const cat = await index();
+    expect(cat.entries).toHaveLength(1);
+    expect(cat.entries[0]!.durationMs).toBe(3000);
+    await expect(importSfx(paths, { ...music, file: organ, sourceUrl: "https://example.org/other" }, quiet)).rejects.toThrow(/already in the library \(cc0 from https:\/\/commons/);
+  });
+
+  it.each([
+    ["a sound effect pinned to a music cue", { kind: "sfx" as const, cue: "sting" as const }, /only music can be pinned/],
+    ["an excerpt that starts after the end", { startS: 12 }, /nothing after 12 s/],
+    ["an excerpt longer than the file", { startS: 8, durationS: 5 }, /only 2\.00 s are there/],
+    ["a fade-out longer than half the sound", { durationS: 2, fadeOutS: 1.5 }, /fade-out must be between/],
+    ["a bad id", { id: "Main Theme" }, /--id is not valid/],
+  ])("refuses %s and writes nothing", async (_label, patch, message) => {
+    await expect(importSfx(paths, { ...music, file: organ, ...patch }, quiet)).rejects.toThrow(message);
+    await expect(readFile(join(paths.sfxDir, "index.json"))).rejects.toThrow();
+    expect(await readFile(paths.attribution, "utf8")).toContain("None bundled yet.");
   });
 });

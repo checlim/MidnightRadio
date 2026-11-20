@@ -136,3 +136,16 @@ Then choose takes and build the library:
 2. From the repo root, with ffmpeg installed: `pnpm --filter @midnight-radio/mix sfx:assemble` (add `--candidates <dir>` for another folder).
 
 It checks each pick is the take recorded for the current prompt and seed and that the file is unchanged, converts it to 24 kHz mono 16-bit, crossfades a bed's tail into its head so it loops without a seam, gives discrete sounds 5 ms and 30 ms edge fades, normalises the peak to −1 dBFS, and checks the length, peak, edges and loop point. It writes `assets/sfx/foley/` and `assets/sfx/beds/`, `assets/sfx/index.json` (sounds it did not make, music cues and edited titles are kept) and the sound section of `ATTRIBUTION.md`, and lists any sudden jumps worth a listen. The candidates folder keeps the original takes as masters. Running it again gives identical files.
+
+## Adding CC0 sounds and music
+
+Music cues (theme, sting, transition) and any found foley come from CC0 sources, not the generator. After confirming the CC0 dedication on the source page:
+
+```sh
+pnpm --filter @midnight-radio/mix sfx:import -- --file music-candidates/tutti-bombwerk.wav \
+  --id main_theme --kind music --title "Main theme" --cue theme \
+  --source https://commons.wikimedia.org/wiki/File:Tutti-Bombwerk.wav --author "Vox Mirabilis" \
+  --start 12 --duration 20
+```
+
+It trims the excerpt, converts it to 24 kHz mono 16-bit (stereo is mixed down), fades music out over 1 s (`--fade-out` to change; `--loop` makes a seamless bed instead), normalises the peak to −1 dBFS, records the source page, author, original file hash and excerpt in `index.json`, pins `--cue` if given, and updates `ATTRIBUTION.md`. Importing the same `--id` from the same `--source` again replaces it, so the excerpt can be adjusted.

@@ -55,6 +55,10 @@ export const SfxSourceSchema = z.discriminatedUnion("type", [
     url: z.url({ protocol: /^https$/ }).max(300),
     author: shortText.optional(),
     licence: z.literal("CC0-1.0"),
+    /** Hash of the downloaded file, so the import can be repeated and checked. */
+    originalSha256: sha256.optional(),
+    /** The part of the original that was used, when it was trimmed. */
+    excerpt: z.strictObject({ startMs: z.number().int().min(0), durationMs: z.number().int().min(100) }).optional(),
   }),
   /** Made by hand for the project. */
   z.strictObject({

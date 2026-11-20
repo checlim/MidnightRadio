@@ -19,3 +19,4 @@ __pycache__/
 services/local-audio/spike-output/
 services/local-audio/catalogue-candidates/
 services/local-audio/sfx-candidates/
+music-candidates/
