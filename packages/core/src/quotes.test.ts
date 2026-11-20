@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { QUOTE_PARSER_VERSION, parseQuotes } from "./quotes.js";
+import { QUOTE_PARSER_VERSION, parseQuotes, quoteKind } from "./quotes.js";
 
 const texts = (src: string) => parseQuotes(src).quotes.map((q) => q.text);
 const problems = (src: string) => parseQuotes(src).diagnostics.map((d) => d.problem);
@@ -63,6 +63,40 @@ describe("parseQuotes: what counts as one quotation", () => {
   it("reports a genuinely quote-free chapter as ok with no quotes", () => {
     expect(parseQuotes("It was a dark night. The wind\u2019s howl rose and fell.")).toMatchObject({ status: "ok", style: "none", quotes: [] });
     expect(parseQuotes("")).toMatchObject({ status: "ok", quotes: [] });
+  });
+});
+
+describe("parseQuotes: speech and terms (quotes-2)", () => {
+  const kinds = (src: string) => parseQuotes(src).quotes.map((q) => [q.text, q.kind]);
+
+  it("tags short quotations without punctuation as terms, and punctuated ones as speech", () => {
+    expect(kinds("He ordered the \u201crobber steak\u201d and called it \u201cOrdog\u201d. \u201cYes,\u201d I said. \u201cWho\u2019s there?\u201d")).toEqual([
+      ["robber steak", "term"],
+      ["Ordog", "term"],
+      ["Yes,", "speech"],
+      ["Who\u2019s there?", "speech"],
+    ]);
+  });
+
+  it("tags a short quotation with only a trailing comma or full stop as a term when it sits inside a sentence", () => {
+    expect(kinds("He said it was called \u201cpaprika hendl,\u201d and that it was good.")).toEqual([["paprika hendl,", "term"]]);
+    expect(kinds("The fragments of the \u201cHouse of Usher.\u201d")).toEqual([["House of Usher.", "term"]]);
+    // after punctuation it is speech: an answer, or the words after "I said,"
+    expect(kinds("\u201cThe Herr Englishman?\u201d \u201cYes,\u201d I said, \u201cJonathan Harker.\u201d")).toEqual([
+      ["The Herr Englishman?", "speech"],
+      ["Yes,", "speech"],
+      ["Jonathan Harker.", "speech"],
+    ]);
+    expect(kinds("He paused. \u201cCome,\u201d he said.")).toEqual([["Come,", "speech"]]);
+  });
+
+  it("keeps long quotations, several-line ones and inner punctuation as speech", () => {
+    expect(quoteKind("one two three four", 1, "a")).toBe("speech");
+    expect(quoteKind("Ordog", 2, "a")).toBe("speech");
+    expect(quoteKind("Run, now", 1, "a")).toBe("speech");
+    expect(quoteKind("Help!", 1, "a")).toBe("speech");
+    expect(quoteKind("so-called", 1, undefined)).toBe("term"); // a hyphen is not a dash
+    expect(quoteKind("ease.", 1, undefined)).toBe("speech"); // at the start of the text there is no word before
   });
 });
 

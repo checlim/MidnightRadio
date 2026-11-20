@@ -20,9 +20,17 @@
  *   treated as having no quotes.
  * - In single-quote chapters, ’ between letters is an apostrophe ("don’t"), as is a leading ’
  *   ("’tis"); a ’ after a letter and before a space or punctuation closes an open quotation.
+ * - Kind (added in quotes-2): a quotation is a `term` (words quoted for emphasis or as a name)
+ *   if it is one piece of at most three words and either has no sentence or clause punctuation
+ *   (. , ! ? ; : … or a dash) anywhere in it (“robber steak”, “Red Death”), or its only
+ *   punctuation is one trailing comma or full stop and a word comes straight before its opening
+ *   mark, so it sits inside a sentence (“called “paprika hendl,” and”, “of the “House of Usher.”).
+ *   Everything else is `speech`: spoken words carry punctuation inside their marks and follow
+ *   punctuation (“Yes,” I said; I said, “Jonathan Harker.”). A deterministic stand-in for "is this
+ *   dialogue"; fidelity is scored on speech (Req 4.2).
  */
 
-export const QUOTE_PARSER_VERSION = "quotes-1";
+export const QUOTE_PARSER_VERSION = "quotes-2";
 
 export interface QuotePiece {
   /** Offsets into `sourceText` of the quoted words, without the marks (end exclusive). */
@@ -30,9 +38,28 @@ export interface QuotePiece {
   end: number;
 }
 
+export type QuoteKind = "speech" | "term";
+
+export const TERM_MAX_WORDS = 3;
+const CLAUSE_PUNCTUATION = /[.,!?;:\u2026\u2014\u2013]/;
+
+/**
+ * `term` or `speech` (see the policy above). `before` is the nearest non-space character before
+ * the opening mark, if any.
+ */
+export function quoteKind(text: string, pieces: number, before?: string): QuoteKind {
+  const t = text.replace(/[\u00AD\u200B-\u200D\u2060\uFEFF]/g, "").trim();
+  const words = t.split(/\s+/).filter((w) => w.length > 0);
+  if (pieces !== 1 || words.length > TERM_MAX_WORDS) return "speech";
+  if (!CLAUSE_PUNCTUATION.test(t)) return "term";
+  const trailingOnly = /[,.]$/.test(t) && !CLAUSE_PUNCTUATION.test(t.slice(0, -1));
+  return trailingOnly && before !== undefined && /[\p{L}\p{N}]/u.test(before) ? "term" : "speech";
+}
+
 export interface SourceQuote {
   /** `q1`, `q2`… in order of appearance. */
   id: string;
+  kind: QuoteKind;
   /** From the opening mark to just after the closing mark (or the end of the last piece). */
   start: number;
   end: number;
@@ -68,6 +95,13 @@ const SINGLE_CLOSE = "\u2019"; // ’
 
 const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c);
 const OPENERS_BEFORE = /[\s([{\u2014\u2013-]/; // a quote opens after space, a bracket or a dash
+
+/** The nearest non-space character before `at`, or undefined at the start. */
+function charBefore(text: string, at: number): string | undefined {
+  let j = at - 1;
+  while (j >= 0 && /\s/.test(text[j]!)) j--;
+  return j >= 0 ? text[j] : undefined;
+}
 
 function context(text: string, at: number): string {
   return text.slice(Math.max(0, at - 20), at + 20).replace(/\s+/g, " ");
@@ -166,7 +200,7 @@ export function parseQuotes(sourceText: string): QuoteParse {
     const pieces = [...q.pieces, ...piecesOf(q.pieceStart, closeAt ?? sourceText.length)];
     const text = pieces.map((p) => sourceText.slice(p.start, p.end)).join(" ");
     if (text.trim().length === 0) diag(q.start, "empty_quote", "a pair of quote marks has nothing between them");
-    else quotes.push({ id: `q${quotes.length + 1}`, start: q.start, end: closeAt === null ? sourceText.length : closeAt + 1, pieces, text });
+    else quotes.push({ id: `q${quotes.length + 1}`, kind: quoteKind(text, pieces.length, charBefore(sourceText, q.start)), start: q.start, end: closeAt === null ? sourceText.length : closeAt + 1, pieces, text });
     open = null;
   };
 

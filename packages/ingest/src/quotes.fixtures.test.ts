@@ -27,17 +27,26 @@ const summary = (id: string) => {
     chapters: r.length,
     ambiguous: r.filter((c) => c.parse.status === "ambiguous").map((c) => c.title),
     quotes: r.reduce((n, c) => n + c.parse.quotes.length, 0),
+    terms: r.reduce((n, c) => n + c.parse.quotes.filter((q) => q.kind === "term").length, 0),
     overSeveralLines: r.reduce((n, c) => n + c.parse.quotes.filter((q) => q.pieces.length > 1).length, 0),
   };
 };
 
 describe("quote parser on the bundled books", () => {
   it("parses every chapter of Dracula", () => {
-    expect(summary("dracula")).toEqual({ chapters: 28, ambiguous: [], quotes: 1367, overSeveralLines: 38 });
+    expect(summary("dracula")).toEqual({ chapters: 28, ambiguous: [], quotes: 1367, terms: 81, overSeveralLines: 38 });
   });
 
   it("parses Poe except the two genuinely ambiguous stories", () => {
-    expect(summary("poe-short-fiction")).toEqual({ chapters: 66, ambiguous: ["The Gold-Bug", "The Literary Life of Thingum Bob, Esq."], quotes: 2316, overSeveralLines: 73 });
+    expect(summary("poe-short-fiction")).toEqual({ chapters: 66, ambiguous: ["The Gold-Bug", "The Literary Life of Thingum Bob, Esq."], quotes: 2316, terms: 269, overSeveralLines: 73 });
+  });
+
+  it("tags the demo chapters' quoted words for emphasis and names as terms, so a faithful adaptation can reach full fidelity", () => {
+    const terms = (id: string, title: RegExp) => results.get(id)!.find((c) => title.test(c.title))!.parse.quotes.filter((q) => q.kind === "term").map((q) => canonicaliseText(q.text));
+    expect(terms("dracula", /^I$/)).toEqual(["paprika hendl,", "mamaliga,", "impletata.", "robber steak", "word-bearer", "Ordog", "pokol", "stregoica", "vrolok", "vlkoslak", "gotza", "Mittel Land", "Lenore"]);
+    expect(terms("dracula", /^II$/)).toEqual(["Red", "Blue"]);
+    expect(terms("poe-short-fiction", /Usher/)).toEqual(["House of Usher", "The Haunted Palace,", "House of Usher."]);
+    expect(terms("poe-short-fiction", /Telltale/)).toEqual([]);
   });
 
   it("finds the demo chapters' speech exactly", () => {

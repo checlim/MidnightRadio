@@ -5,5 +5,6 @@ export * from "./normalise.js";
 export * from "./quotes.js";
 export * from "./schema.js";
 export * from "./sfx.js";
+export * from "./validate.js";
 export * from "./verbatim.js";
 export * from "./voice.js";
