@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "sfx-library": {
+      "command": "node",
+      "args": ["mcp/sfx-library/bin/sfx-library.mjs"],
+      "disabled": false,
+      "autoApprove": ["search_sfx", "get_sfx", "list_music_cues", "audit_script_sfx"]
+    }
+  }
+}
