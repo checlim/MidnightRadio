@@ -1,10 +1,11 @@
 "use client";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
-import { castChanges, fileProblem, shouldPoll, stateLabel, unfinishedChapters, voiceChoices, type BookView } from "../studio/logic";
+import { fileProblem, shouldPoll, stateLabel, unfinishedChapters, voiceBrief, type BookView } from "../studio/logic";
 
 /**
- * The studio (Req 1.1, 2.5, 8.2, 9.1): upload an EPUB you have the right to adapt, choose the
- * chapters and the speech budget, watch the episodes being made, and change a character's voice.
+ * The studio (Req 1.1, 8.2, 9.1): upload an EPUB you have the right to adapt, choose the chapters
+ * and the speech budget, and watch the episodes being made. Casting and voices are automatic; the
+ * cast is shown, not edited.
  * Only rendered when generation is enabled; the server refuses every request otherwise.
  */
 
@@ -28,7 +29,6 @@ export function Studio({ passkeyRequired, initialBookId }: { passkeyRequired: bo
   const [book, setBook] = useState<BookView | null>(null);
   const [chosen, setChosen] = useState<Set<number>>(new Set());
   const [budget, setBudget] = useState(0);
-  const [pending, setPending] = useState<Record<string, string>>({});
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -37,7 +37,6 @@ export function Studio({ passkeyRequired, initialBookId }: { passkeyRequired: bo
     if (resetChoices) {
       setChosen(new Set(unfinishedChapters(b).slice(0, 1)));
       setBudget(b.charBudget);
-      setPending({});
     }
     const url = new URL(window.location.href);
     url.searchParams.set("book", b.id);
@@ -92,24 +91,6 @@ export function Studio({ passkeyRequired, initialBookId }: { passkeyRequired: bo
       const r = await call<{ queued: string[] }>(`/api/books/${book.id}/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chapters: [...chosen], charBudget: budget }) }, passkey);
       setNotice(r.queued.length > 0 ? `${r.queued.length} episode(s) queued. They appear on the radio when ready.` : "Those episodes are already on air.");
       await refresh(book.id);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function saveCast() {
-    if (!book) return;
-    const changes = castChanges(book, pending);
-    if (changes.length === 0) return;
-    setError(null);
-    setNotice(null);
-    setBusy("Changing voices…");
-    try {
-      const r = await call<{ changed: string[]; requeued: string[] }>(`/api/books/${book.id}/cast`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changes }) }, passkey);
-      setNotice(`New voice for ${r.changed.join(", ")}. ${r.requeued.length} episode(s) will be re-recorded with only those lines changed.`);
-      await refresh(book.id, true);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -240,7 +221,7 @@ export function Studio({ passkeyRequired, initialBookId }: { passkeyRequired: bo
         <section className="card" aria-labelledby="cast-h">
           <h2 id="cast-h">The cast</h2>
           <p className="muted">
-            Announcer: {voiceName(book.cast.announcerVoiceId)} · Narrator: {voiceName(book.cast.narratorVoiceId)}. Changing a voice re-records only that character&rsquo;s lines.
+            Every character has a voice designed for them from the description below; the Announcer ({voiceName(book.cast.announcerVoiceId)}) and Narrator ({voiceName(book.cast.narratorVoiceId)}) are the series voices.
           </p>
           <table className="cast-table">
             <thead>
@@ -256,26 +237,11 @@ export function Studio({ passkeyRequired, initialBookId }: { passkeyRequired: bo
                     {c.name}
                     {c.description ? <span className="muted"> · {c.description}</span> : null}
                   </th>
-                  <td>
-                    {c.speaks ? (
-                      <select aria-label={`Voice for ${c.name}`} value={pending[c.name] ?? c.voiceId ?? ""} onChange={(e) => setPending({ ...pending, [c.name]: e.target.value })}>
-                        {voiceChoices(book, c.name, pending).map((v) => (
-                          <option key={v.id} value={v.id}>
-                            {v.name} ({v.gender}, {v.ageBands.join("/")})
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <span className="muted">does not speak</span>
-                    )}
-                  </td>
+                  <td>{c.speaks ? (voiceBrief(book, c) ?? <span className="muted">a series voice</span>) : <span className="muted">does not speak</span>}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <button type="button" className="brass-button" onClick={() => void saveCast()} disabled={busy !== null || castChanges(book, pending).length === 0}>
-            Save voice changes
-          </button>
         </section>
       )}
     </div>

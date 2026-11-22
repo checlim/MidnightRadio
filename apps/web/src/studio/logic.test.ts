@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { castChanges, fileProblem, shouldPoll, stateLabel, unfinishedChapters, voiceChoices, type BookView, type EpisodeView } from "./logic";
+import { fileProblem, shouldPoll, stateLabel, unfinishedChapters, voiceBrief, type BookView, type EpisodeView } from "./logic";
 
 const voice = (id: string) => ({ id, name: id.toUpperCase(), gender: "neutral", ageBands: ["adult"], description: null });
 const ep = (state: EpisodeView["state"], extra: Partial<EpisodeView> = {}): EpisodeView => ({ chapterId: "c", episodeNumber: 1, title: "I", stationId: "s", state, message: null, linesRendered: 0, linesTotal: 0, ...extra });
@@ -35,18 +35,11 @@ describe("studio logic", () => {
     expect(fileProblem({ name: "empty.epub", size: 0 })).toBe("The file is empty.");
   });
 
-  it("offers each character their own voice first and every voice nobody else holds, never the Announcer's or Narrator's", () => {
-    const b = book();
-    expect(voiceChoices(b, "Count Dracula", {}).map((v) => v.id)).toEqual(["v1", "v3"]);
-    expect(voiceChoices(b, "The landlady", {})).toEqual([]);
-    // After moving the Count to v3, Jonathan may take v1 (a swap in one change).
-    expect(voiceChoices(b, "Jonathan Harker", { "Count Dracula": "v3" }).map((v) => v.id)).toEqual(["v2", "v1"]);
-    expect(voiceChoices(book({ cast: null }), "Count Dracula", {})).toEqual([]);
-  });
-
-  it("sends only edits that change a voice", () => {
-    expect(castChanges(book(), { "Count Dracula": "v1", "Jonathan Harker": "v3" })).toEqual([{ name: "Jonathan Harker", voiceId: "v3" }]);
-    expect(castChanges(book(), {})).toEqual([]);
+  it("shows the voice description each character's voice was designed from", () => {
+    const b = book({ voices: [{ ...voice("v1"), description: "A deep, slow, courtly old voice." }, voice("v2")] });
+    expect(voiceBrief(b, { voiceId: "v1" })).toBe("A deep, slow, courtly old voice.");
+    expect(voiceBrief(b, { voiceId: "v2" })).toBeNull(); // a voice without a description (e.g. a series voice)
+    expect(voiceBrief(b, { voiceId: null })).toBeNull(); // does not speak
   });
 
   it("describes episode states, polls only while something is being made, and suggests unfinished chapters", () => {

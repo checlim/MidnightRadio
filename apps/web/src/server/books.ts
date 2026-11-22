@@ -2,15 +2,14 @@ import { randomBytes } from "node:crypto";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { CastEditError, planVoiceEdits, type VoiceCatalogue } from "@midnight-radio/core";
-import { BudgetLedger, CastConflictError, editCastVoices, loadBudgetConfig, loadCast } from "@midnight-radio/db";
+import { BudgetLedger, loadBudgetConfig, loadCast } from "@midnight-radio/db";
 import { IngestError, ingestEpub } from "@midnight-radio/ingest";
 import { EPISODE_JOB, JobQueue, planBook, stationIdFor, storeBook, uploadPathFor, type JobState } from "@midnight-radio/worker";
 import { z } from "zod";
 import type { WebConfig } from "./config";
 
 /**
- * What the generation routes do (Req 1.1, 1.2, 2.5, 8.2), kept out of the route files so they can
+ * What the generation routes do (Req 1.1, 1.2, 8.2), kept out of the route files so they can
  * be tested directly. Every function takes the open database; errors meant for the person are
  * `HttpError`s with a status and a message fit to show.
  */
@@ -235,39 +234,4 @@ export function startGeneration(db: DatabaseSync, config: WebConfig, bookId: str
     }
   }
   return { queued };
-}
-
-export const CastEditRequestSchema = z.strictObject({
-  changes: z.array(z.strictObject({ name: z.string().min(1).max(200), voiceId: z.string().min(1).max(100) })).min(1).max(100),
-});
-
-/**
- * Change characters' voices (Req 2.5): checked against the Cast's rules first for a clear
- * message, then applied; only the changed characters' lines are invalidated, and the episodes
- * they appear in are queued to re-render and re-mix.
- */
-export function editCast(db: DatabaseSync, voices: VoiceCatalogue, bookId: string, input: unknown): { changed: string[]; requeued: string[] } {
-  const parsed = CastEditRequestSchema.safeParse(input);
-  if (!parsed.success) throw new HttpError(400, "Send the characters and the voices to give them.");
-  const cast = loadCast(db, bookId);
-  if (!cast) throw new HttpError(404, "This book has no Cast yet.");
-  let changes;
-  try {
-    changes = planVoiceEdits(cast, parsed.data.changes, voices);
-  } catch (err) {
-    if (err instanceof CastEditError) throw new HttpError(422, err.message);
-    throw err;
-  }
-  if (changes.length === 0) return { changed: [], requeued: [] };
-  let result;
-  try {
-    result = editCastVoices(db, bookId, cast.pin, changes.map(({ name, voiceId, voiceFit }) => ({ name, voiceId, voiceFit })));
-  } catch (err) {
-    if (err instanceof CastConflictError) throw new HttpError(409, err.message);
-    throw err;
-  }
-  const queue = new JobQueue(db);
-  const requeued = result.affectedChapterIds.filter((id) => db.prepare("SELECT 1 FROM episodes WHERE chapter_id = ?").get(id));
-  for (const id of requeued) queue.enqueue(EPISODE_JOB, id);
-  return { changed: result.changed, requeued };
 }

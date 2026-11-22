@@ -23,7 +23,6 @@ test.describe("generation off (the live site)", () => {
       await request.post("/api/books", { data: "x", headers: { "x-file-name": "a.epub" } }),
       await request.get("/api/books/bk-0123456789abcdef"),
       await request.post("/api/books/bk-0123456789abcdef/generate", { data: { chapters: [1], charBudget: 1000 } }),
-      await request.post("/api/books/bk-0123456789abcdef/cast", { data: { changes: [] } }),
     ]) {
       expect(r.status()).toBe(404);
     }
@@ -79,13 +78,11 @@ test.describe("the studio (stub providers)", () => {
     await expect(page.locator(".now-playing .line")).not.toHaveText("\u00a0", { timeout: 15_000 }); // a caption from the published transcript
     await page.goBack();
 
-    // Every character has a voice designed for them from the LLM's brief, so there is nothing to swap
-    // to: the editor shows The Stranger's own voice as the only choice. (Redesigning a voice: step 3.)
-    const voice = page.getByLabel("Voice for The Stranger");
-    await expect(voice).toBeVisible();
-    const options = await voice.locator("option").allTextContents();
-    expect(options).toEqual([expect.stringMatching(/^The Stranger \(neutral, adult\)$/)]);
-    await expect(page.getByText(/The Stranger · Speaks every line in stub mode\./)).toBeVisible();
+    // Casting is automatic: every character has a voice designed from the LLM's description, shown, not edited.
+    const stranger = page.locator(".cast-table tr", { hasText: "The Stranger" });
+    await expect(stranger).toContainText("A clear, steady adult voice of middle pitch and even pace, for The Stranger.");
+    await expect(page.locator(".cast-table select")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /voice/i })).toHaveCount(0);
   });
 
   test("refuses what is not an EPUB, with the reason", async ({ page }) => {

@@ -3,17 +3,16 @@ import type { ClonableCatalogue } from "@midnight-radio/core";
 import { loadCast } from "@midnight-radio/db";
 import { loadBookCatalogue, loadSeriesCatalogue } from "@midnight-radio/worker";
 import type { WebConfig } from "./config";
-import { HttpError, bookView, editCast, readCapped, startGeneration, toResponse, uploadBook } from "./books";
+import { HttpError, bookView, readCapped, startGeneration, toResponse, uploadBook } from "./books";
 import { guarded } from "./guard";
 
 /**
- * The generation API (Req 1.1, 2.5, 8.2, 8.5). Each handler goes through `guarded` first, so
+ * The generation API (Req 1.1, 8.2, 8.5). Each handler goes through `guarded` first, so
  * with generation disabled every one of them answers 404 before reading the request.
  *
  *   POST /api/books                 upload an EPUB (raw body, file name in x-file-name)
  *   GET  /api/books/:id             the Book: chapters, episode progress, Cast and voices
  *   POST /api/books/:id/generate    { chapters, charBudget }: queue the chosen chapters
- *   POST /api/books/:id/cast        { changes: [{ name, voiceId }] }: change voices, re-render
  */
 
 type Params = { params: Promise<{ id: string }> };
@@ -72,16 +71,6 @@ export const generateRoute = (request: Request, ctx: Params) =>
     try {
       const id = await bookId(ctx);
       return Response.json(startGeneration(db(), config, id, await jsonBody(request)), { status: 202, headers: noStore });
-    } catch (err) {
-      return toResponse(err);
-    }
-  });
-
-export const castRoute = (request: Request, ctx: Params) =>
-  guarded(request, "write", async ({ config, db }) => {
-    try {
-      const id = await bookId(ctx);
-      return Response.json(editCast(db(), await bookVoices(config, db(), id), id, await jsonBody(request)), { headers: noStore });
     } catch (err) {
       return toResponse(err);
     }

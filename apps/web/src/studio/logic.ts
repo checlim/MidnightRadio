@@ -1,6 +1,6 @@
 /**
  * The studio page's decisions, kept pure so they can be tested without a browser: what may be
- * uploaded, which voices a character may take, how an episode's state reads, and when to poll.
+ * uploaded, how a character's voice is described, how an episode's state reads, and when to poll.
  * Types mirror `GET /api/books/:id` (apps/web/src/server/books.ts).
  */
 
@@ -55,25 +55,10 @@ export function fileProblem(file: { name: string; size: number }): string | null
   return null;
 }
 
-/**
- * Voices a character can be given: every voice no one else in the Cast holds, never the
- * Announcer's or Narrator's, with the character's own voice first. `pending` holds edits not yet
- * saved, so two characters can swap voices in one change.
- */
-export function voiceChoices(book: BookView, name: string, pending: Readonly<Record<string, string>>): VoiceView[] {
-  if (!book.cast) return [];
-  const current = (c: CharacterView) => pending[c.name] ?? c.voiceId;
-  const me = book.cast.characters.find((c) => c.name === name);
-  if (!me?.speaks) return [];
-  const taken = new Set([book.cast.announcerVoiceId, book.cast.narratorVoiceId, ...book.cast.characters.filter((c) => c.name !== name).map(current)]);
-  const mine = current(me);
-  const options = book.voices.filter((v) => v.id === mine || !taken.has(v.id));
-  return [...options.filter((v) => v.id === mine), ...options.filter((v) => v.id !== mine)];
-}
-
-/** Only the edits that change something, ready for `POST /api/books/:id/cast`. */
-export function castChanges(book: BookView, pending: Readonly<Record<string, string>>): { name: string; voiceId: string }[] {
-  return (book.cast?.characters ?? []).flatMap((c) => (pending[c.name] && pending[c.name] !== c.voiceId ? [{ name: c.name, voiceId: pending[c.name]! }] : []));
+/** The voice description a character's voice was designed from, or null (silent, or cast from the series voices). */
+export function voiceBrief(book: BookView, character: Pick<CharacterView, "voiceId">): string | null {
+  if (!character.voiceId) return null;
+  return book.voices.find((v) => v.id === character.voiceId)?.description ?? null;
 }
 
 /** A short label for an episode's state, with progress while rendering. */

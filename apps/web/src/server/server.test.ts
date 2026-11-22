@@ -12,7 +12,7 @@ const SERIES = loadSeriesCatalogue(join(import.meta.dirname, "../../../.."));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generationShown, loadWebConfig } from "./config";
 import { PASSKEY_HEADER, resetGuards, sharedDb } from "./guard";
-import { bookRoute, castRoute, generateRoute, uploadRoute } from "./routes";
+import { bookRoute, generateRoute, uploadRoute } from "./routes";
 
 const FILLER =
   "The night was cold and the road was long. The carriage climbed between dark pines while the wind moved in the branches above. Far below, a river ran black under the moon, and the driver said nothing at all. Every mile the hills grew steeper and the sky grew lower, until the stars were hidden and only the lamps showed the way.";
@@ -53,7 +53,6 @@ describe("generation routes", () => {
     await upload(headers),
     await bookRoute(get(`/api/books/${ID}`, headers), ctx(ID)),
     await generateRoute(post(`/api/books/${ID}/generate`, JSON.stringify({ chapters: [1], charBudget: 1000 }), headers), ctx(ID)),
-    await castRoute(post(`/api/books/${ID}/cast`, JSON.stringify({ changes: [{ name: "x", voiceId: "y" }] }), headers), ctx(ID)),
   ];
 
   beforeEach(async () => {
@@ -86,15 +85,26 @@ describe("generation routes", () => {
     const ok = await upload({ [PASSKEY_HEADER]: "judge-passkey-0123456789" });
     expect(ok.status).toBe(201);
     expect(JSON.stringify(await ok.json())).not.toContain("judge-passkey");
-    // Three wrong write attempts so far; the fourth and fifth are refused, then the client is locked out.
-    expect((await upload({ [PASSKEY_HEADER]: "guess-one" })).status).toBe(401);
-    expect((await upload({ [PASSKEY_HEADER]: "guess-two" })).status).toBe(401);
+    // Two wrong write attempts so far; the third to fifth are refused, then the client is locked out.
+    for (const guess of ["guess-one", "guess-two", "guess-three"]) expect((await upload({ [PASSKEY_HEADER]: guess })).status).toBe(401);
     const locked = await upload({ [PASSKEY_HEADER]: "judge-passkey-0123456789" });
     expect([locked.status, (await locked.json()).error, locked.headers.get("retry-after")]).toEqual([429, "Too many incorrect passkey attempts. Try again later.", expect.stringMatching(/^\d+$/)]);
   });
 
   describe("with generation enabled", () => {
     beforeEach(() => vi.stubEnv("GENERATION_ENABLED", "true"));
+
+    it("shows a book's cast and the voices it was cast from", async () => {
+      const book = await (await upload()).json();
+      const { pin, members } = buildCast(
+        [{ id: "c1", name: "Count Dracula", aliases: [], genderPresentation: "masculine", ageBand: "older", description: "A host.", speaks: true, mentionCount: 3, firstChapterIdx: 0 }],
+        SERIES,
+      );
+      saveCast(sharedDb(loadWebConfig()), book.id, pin, members);
+      const view = await (await bookRoute(get(`/api/books/${book.id}`), ctx(book.id))).json();
+      expect(view.cast.characters).toEqual([expect.objectContaining({ name: "Count Dracula", speaks: true, voiceId: members[2]!.voiceId })]);
+      expect(view.voices.map((v: { id: string }) => v.id)).toContain(members[2]!.voiceId);
+    });
 
     it("uploads an EPUB: lists its chapters, keeps the file, and returns the same Book on a second upload", async () => {
       const r = await upload();
@@ -158,32 +168,5 @@ describe("generation routes", () => {
       expect((await bookRoute(get("/api/books/../../etc"), ctx("../../etc"))).status).toBe(404);
     });
 
-    it("changes a voice, refuses a reserved one, and queues only the episodes that use the character", async () => {
-      const book = await (await upload()).json();
-      const db = sharedDb(loadWebConfig());
-      const { pin, members } = buildCast(
-        [{ id: "c1", name: "Count Dracula", aliases: [], genderPresentation: "masculine", ageBand: "older", description: "A host.", speaks: true, mentionCount: 3, firstChapterIdx: 0 }],
-        SERIES,
-      );
-      const cast = (body: unknown) => castRoute(post(`/api/books/${book.id}/cast`, JSON.stringify(body)), ctx(book.id));
-      expect((await cast({ changes: [{ name: "Count Dracula", voiceId: "stub-m1" }] })).status).toBe(404); // no Cast yet
-      saveCast(db, book.id, pin, members);
-      const ch1 = book.chapters[0].episodes[0].chapterId;
-      // Chapter 1 has an episode with one of the Count's lines; chapter 2 has none.
-      const script = db.prepare("INSERT INTO scripts (id, chapter_id, version, json, status) VALUES ('s1', ?, 1, '{}', 'valid') RETURNING id").get(ch1) as { id: string };
-      db.prepare("INSERT INTO segments (id, script_id, section, scene_idx, idx, kind, speaker, text, status) VALUES ('g1', ?, 'scenes', 0, 0, 'dialogue', 'Count Dracula', 'Welcome!', 'rendered')").run(script.id);
-      db.prepare("INSERT INTO episodes (id, chapter_id, mp3_path, clean_mp3_path, vtt_path, duration_ms) VALUES ('e1', ?, 'a', 'b', 'c', 1000)").run(ch1);
-
-      const reserved = await cast({ changes: [{ name: "Count Dracula", voiceId: SERIES.reserved.narrator }] });
-      expect([reserved.status, (await reserved.json()).error]).toEqual([422, expect.stringMatching(/belongs to the Announcer or Narrator/)]);
-      const free = SERIES.voices.find((v) => v.id !== members[2]!.voiceId && v.id !== members[0]!.voiceId && v.id !== members[1]!.voiceId)!;
-      const r = await cast({ changes: [{ name: "count dracula", voiceId: free.id }] });
-      expect(r.status).toBe(200);
-      expect(await r.json()).toEqual({ changed: ["Count Dracula"], requeued: [ch1] });
-      const view = await (await bookRoute(get(`/api/books/${book.id}`), ctx(book.id))).json();
-      expect(view.cast.characters).toEqual([expect.objectContaining({ name: "Count Dracula", voiceId: free.id })]);
-      expect(view.chapters[0].episodes[0].state).toBe("queued");
-      expect(view.chapters[1].episodes[0].state).toBe("not_started");
-    });
   });
 });

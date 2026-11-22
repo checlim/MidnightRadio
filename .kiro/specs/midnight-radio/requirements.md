@@ -41,7 +41,7 @@ Target category: **Resurrection** (Kiroween 2026). Demo content: public-domain G
 2. THE SYSTEM SHALL deterministically assign every character a distinct voice from a pinned voice catalogue (invariant to processing order for the same frozen character inventory) and persist the Cast with the Book; IF available voices are insufficient THEN casting SHALL pause with a clear error rather than silently share voices.
 3. WHILE a Book has a persisted Cast THE SYSTEM SHALL reuse that Cast for every chapter and SHALL NOT reassign a voice automatically.
 4. WHEN a chapter introduces a character not in the Cast THE SYSTEM SHALL add the character with an unused, non-reserved voice and record the addition, or pause if none is available; existing assignments SHALL remain unchanged.
-5. WHERE the user edits the Cast THE SYSTEM SHALL invalidate and re-render only the Segments spoken by the changed characters, then re-mix affected Episodes and rebuild their transcripts/markers from the new durations. Voice edits SHALL retain distinct voices and reserved-voice exclusion.
+5. THE SYSTEM SHALL cast and voice every Book automatically: each speaking character gets a voice designed for them from an LLM-written voice description, and the Cast is shown to the user but not edited. (Changed by the user for a fully automatic flow; it replaced user Cast edits. The targeted re-render after a voice change, which invalidates only the changed characters' Segments and re-mixes affected Episodes, stays in the library for operators.)
 6. THE SYSTEM SHALL reserve one fixed voice for the Announcer and one for the Narrator, never assigned to a character.
 
 ### Requirement 3 — Radio adaptation
