@@ -9,7 +9,8 @@ import { BudgetLedger, editCastVoices, loadCast, openDb, type BudgetConfig } fro
 import { ingestEpub } from "@midnight-radio/ingest";
 import { buildEpub } from "@midnight-radio/ingest/src/test-support/build-epub.js";
 import { SERIES_TITLE, StubLlmProvider, buildAdaptationPrompt } from "@midnight-radio/llm";
-import { StubProvider, encodeWav } from "@midnight-radio/tts";
+import { encodeWav, type SynthesisRequest } from "@midnight-radio/tts";
+import { speechSpy, voiceDeps } from "./generate/test-support.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { validationCast } from "./generate/cast-lines.js";
 import { storeBook } from "./generate/pipeline.js";
@@ -92,7 +93,7 @@ describe.skipIf(!hasFfmpeg)("episode job (stub model, stub voices, real ffmpeg, 
   let db: DatabaseSync;
   let queue: JobQueue;
   let plan: BookPlan;
-  let tts: StubProvider;
+  let tts: { requests: SynthesisRequest[] };
   let services: GenerationServices;
 
   beforeEach(async () => {
@@ -108,11 +109,17 @@ describe.skipIf(!hasFfmpeg)("episode job (stub model, stub voices, real ffmpeg, 
     const sfxDir = join(dir, "sfx");
     await mkdir(join(sfxDir, "music"), { recursive: true });
     await writeFile(join(sfxDir, "music/theme.wav"), encodeWav(Int16Array.from({ length: 2 * RATE }, (_, i) => Math.round(8000 * Math.sin((2 * Math.PI * 196 * i) / RATE) * Math.min(1, i / 2400, (2 * RATE - i) / 2400)))));
-    tts = new StubProvider();
+    const speech = speechSpy();
+    tts = speech;
+    const v = await voiceDeps(dir);
     services = {
       llm: stubLlm(),
-      tts: async () => tts,
-      voices: STUB_VOICE_CATALOGUE,
+      ttsFor: speech.ttsFor,
+      designer: v.designerFn,
+      series: v.series,
+      seriesDir: v.seriesDir,
+      designPin: v.designPin,
+      voicesRoot: v.voicesRoot,
       sfx: { version: 1, id: "lib", entries: [{ id: "theme_x", kind: "music", title: "Theme", path: "music/theme.wav", sha256: "a".repeat(64), durationMs: 2000, loopable: false, peakDb: -1, tags: [], source: { type: "project", author: "x", licence: "CC0-1.0" } }], musicCues: { theme: "theme_x" } },
       sfxDir,
       styleGuide: "# Style",
@@ -152,14 +159,26 @@ describe.skipIf(!hasFfmpeg)("episode job (stub model, stub voices, real ffmpeg, 
   }, 120_000);
 
   it("after a Cast edit re-renders only the changed character's lines and re-mixes the episode", async () => {
+    // Two speaking characters, each with a voice designed for them; The Stranger speaks every line.
+    const base = stubLlm();
+    const twoVoices = new StubLlmProvider(async (req, call) =>
+      req.jsonSchema.name === "chunk_characters"
+        ? JSON.stringify({ characters: [STUB_CHARACTER, "Mina"].map((name) => ({ name, aliases: [], genderPresentation: "unstated", ageBand: "adult", description: `${name} speaks.`, speaks: true })) })
+        : (await base.complete(req)).text || String(call),
+    );
     queue.enqueue(EPISODE_JOB, chapter1());
-    await run();
+    expect(await run(undefined, { llm: twoVoices })).toEqual([]);
     const before = tts.requests.length;
     const cast = loadCast(db, plan.bookId)!;
-    const used = new Set([cast.announcer.voiceId, cast.narrator.voiceId, ...cast.characters.map((c) => c.voiceId)]);
-    const free = STUB_VOICE_CATALOGUE.voices.find((v) => !used.has(v.id))!;
-    const edit = editCastVoices(db, plan.bookId, cast.pin, [{ name: STUB_CHARACTER, voiceId: free.id, voiceFit: "fair" }]);
-    expect(edit).toMatchObject({ changed: [STUB_CHARACTER], segmentsInvalidated: 2, affectedChapterIds: [chapter1()] });
+    const stranger = cast.characters.find((c) => c.name === STUB_CHARACTER)!;
+    const mina = cast.characters.find((c) => c.name === "Mina")!;
+    expect(stranger.voiceId).not.toBe(mina.voiceId);
+    const free = { id: mina.voiceId! };
+    const edit = editCastVoices(db, plan.bookId, cast.pin, [
+      { name: STUB_CHARACTER, voiceId: mina.voiceId!, voiceFit: "fair" },
+      { name: "Mina", voiceId: stranger.voiceId!, voiceFit: "fair" },
+    ]); // a swap: both are re-voiced, but only The Stranger has lines
+    expect(edit).toMatchObject({ changed: [STUB_CHARACTER, "Mina"], segmentsInvalidated: 2, affectedChapterIds: [chapter1()] });
     expect(db.prepare("SELECT stale FROM episodes WHERE chapter_id = ?").get(chapter1())).toEqual({ stale: 1 });
 
     const job = queue.enqueue(EPISODE_JOB, chapter1());
@@ -200,14 +219,16 @@ describe.skipIf(!hasFfmpeg)("episode job (stub model, stub voices, real ffmpeg, 
 
   it("publishes nothing once another worker has taken the job over", async () => {
     const job = queue.enqueue(EPISODE_JOB, chapter1());
-    const stolen = new StubProvider();
-    const synthesize = stolen.synthesize.bind(stolen);
-    stolen.synthesize = async (req, opts) => {
-      db.prepare("UPDATE jobs SET lease_token = 'another-worker' WHERE id = ?").run(job.id); // the lease was reclaimed elsewhere
-      return synthesize(req, opts);
-    };
+    const stolen = speechSpy((p) => {
+      const synthesize = p.synthesize.bind(p);
+      p.synthesize = async (req, opts) => {
+        db.prepare("UPDATE jobs SET lease_token = 'another-worker' WHERE id = ?").run(job.id); // the lease was reclaimed elsewhere
+        return synthesize(req, opts);
+      };
+      return p;
+    });
     const started = Date.now();
-    await run(undefined, { tts: async () => stolen });
+    await run(undefined, { ttsFor: stolen.ttsFor });
     expect(Date.now() - started).toBeLessThan(3_000); // it let go at once, without retrying each remaining line (back-off starts at 1 s)
     expect(db.prepare("SELECT COUNT(*) AS n FROM episodes").get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM segments WHERE status = 'rendered'").get()).toEqual({ n: 0 });
@@ -219,7 +240,7 @@ describe.skipIf(!hasFfmpeg)("episode job (stub model, stub voices, real ffmpeg, 
   it("retries when the local audio service is not ready", async () => {
     const job = queue.enqueue(EPISODE_JOB, chapter1());
     await run(undefined, {
-      tts: async () => {
+      ttsFor: async () => {
         throw new Error("Qwen3-TTS is not ready: the local audio service is not running");
       },
     });

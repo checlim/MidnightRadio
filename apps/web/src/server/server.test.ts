@@ -2,10 +2,13 @@ import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { STUB_VOICE_CATALOGUE, buildCast } from "@midnight-radio/core";
+import { buildCast } from "@midnight-radio/core";
 import { saveCast } from "@midnight-radio/db";
 import { buildEpub } from "@midnight-radio/ingest/src/test-support/build-epub.js";
-import { EPISODE_JOB, JobQueue } from "@midnight-radio/worker";
+import { EPISODE_JOB, JobQueue, loadSeriesCatalogue } from "@midnight-radio/worker";
+
+/** A book cast from the series voices (as before per-book voices), so the editor offers those. */
+const SERIES = loadSeriesCatalogue(join(import.meta.dirname, "../../../.."));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generationShown, loadWebConfig } from "./config";
 import { PASSKEY_HEADER, resetGuards, sharedDb } from "./guard";
@@ -107,7 +110,7 @@ describe("generation routes", () => {
       expect(again.id).toBe(book.id);
       const view = await bookRoute(get(`/api/books/${book.id}`), ctx(book.id));
       expect(view.status).toBe(200);
-      expect((await view.json()).voices).toEqual(expect.arrayContaining([expect.objectContaining({ id: "stub-m1" })]));
+      expect((await view.json()).voices).toEqual(expect.arrayContaining([expect.objectContaining({ id: "announcer" })])); // no Cast yet: the series voices
     });
 
     it("refuses what is not a usable EPUB, with the reason, and creates no Book", async () => {
@@ -160,7 +163,7 @@ describe("generation routes", () => {
       const db = sharedDb(loadWebConfig());
       const { pin, members } = buildCast(
         [{ id: "c1", name: "Count Dracula", aliases: [], genderPresentation: "masculine", ageBand: "older", description: "A host.", speaks: true, mentionCount: 3, firstChapterIdx: 0 }],
-        STUB_VOICE_CATALOGUE,
+        SERIES,
       );
       const cast = (body: unknown) => castRoute(post(`/api/books/${book.id}/cast`, JSON.stringify(body)), ctx(book.id));
       expect((await cast({ changes: [{ name: "Count Dracula", voiceId: "stub-m1" }] })).status).toBe(404); // no Cast yet
@@ -171,9 +174,9 @@ describe("generation routes", () => {
       db.prepare("INSERT INTO segments (id, script_id, section, scene_idx, idx, kind, speaker, text, status) VALUES ('g1', ?, 'scenes', 0, 0, 'dialogue', 'Count Dracula', 'Welcome!', 'rendered')").run(script.id);
       db.prepare("INSERT INTO episodes (id, chapter_id, mp3_path, clean_mp3_path, vtt_path, duration_ms) VALUES ('e1', ?, 'a', 'b', 'c', 1000)").run(ch1);
 
-      const reserved = await cast({ changes: [{ name: "Count Dracula", voiceId: STUB_VOICE_CATALOGUE.reserved.narrator }] });
+      const reserved = await cast({ changes: [{ name: "Count Dracula", voiceId: SERIES.reserved.narrator }] });
       expect([reserved.status, (await reserved.json()).error]).toEqual([422, expect.stringMatching(/belongs to the Announcer or Narrator/)]);
-      const free = STUB_VOICE_CATALOGUE.voices.find((v) => v.id !== members[2]!.voiceId && v.id !== members[0]!.voiceId && v.id !== members[1]!.voiceId)!;
+      const free = SERIES.voices.find((v) => v.id !== members[2]!.voiceId && v.id !== members[0]!.voiceId && v.id !== members[1]!.voiceId)!;
       const r = await cast({ changes: [{ name: "count dracula", voiceId: free.id }] });
       expect(r.status).toBe(200);
       expect(await r.json()).toEqual({ changed: ["Count Dracula"], requeued: [ch1] });

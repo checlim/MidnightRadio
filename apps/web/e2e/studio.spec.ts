@@ -45,7 +45,7 @@ test.describe("the studio (stub providers)", () => {
     if (worker?.pid && worker.exitCode === null) process.kill(-worker.pid, "SIGTERM");
   });
 
-  test("upload, make an episode, hear it on the radio, change a voice", async ({ page }) => {
+  test("upload, make an episode with a designed voice per character, hear it on the radio", async ({ page }) => {
     test.setTimeout(240_000);
     await page.goto(`${STUDIO}/`);
     await page.getByRole("link", { name: "Make your own broadcast from a DRM-free book" }).click();
@@ -79,20 +79,13 @@ test.describe("the studio (stub providers)", () => {
     await expect(page.locator(".now-playing .line")).not.toHaveText("\u00a0", { timeout: 15_000 }); // a caption from the published transcript
     await page.goBack();
 
-    // Change The Stranger's voice: only that character's lines are recorded again.
+    // Every character has a voice designed for them from the LLM's brief, so there is nothing to swap
+    // to: the editor shows The Stranger's own voice as the only choice. (Redesigning a voice: step 3.)
     const voice = page.getByLabel("Voice for The Stranger");
     await expect(voice).toBeVisible();
-    const options = await voice.locator("option").evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
-    expect(options.length).toBeGreaterThan(1);
-    await voice.selectOption(options[1]!);
-    await page.getByRole("button", { name: "Save voice changes" }).click();
-    await expect(page.getByRole("status")).toHaveText("New voice for The Stranger. 1 episode(s) will be re-recorded with only those lines changed.");
-    await expect(chapter1).toHaveText("Episode 1: On air", { timeout: 180_000 });
-    await expect(voice).toHaveValue(options[1]!);
-    const spokenAfter = Number((await page.getByText(/characters spoken so far/).textContent())!.replace(/[^0-9]/g, ""));
-    // The stand-in model gives The Stranger every quotation; the announcer and narrator lines are not re-recorded.
-    expect(spokenAfter).toBeGreaterThan(spokenBefore);
-    expect(spokenAfter - spokenBefore).toBeLessThan(spokenBefore);
+    const options = await voice.locator("option").allTextContents();
+    expect(options).toEqual([expect.stringMatching(/^The Stranger \(neutral, adult\)$/)]);
+    await expect(page.getByText(/The Stranger · Speaks every line in stub mode\./)).toBeVisible();
   });
 
   test("refuses what is not an EPUB, with the reason", async ({ page }) => {

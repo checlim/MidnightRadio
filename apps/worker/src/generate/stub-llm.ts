@@ -45,6 +45,11 @@ export function stubAdaptation(user: string): AdaptedScript {
 
 export function stubLlm(): StubLlmProvider {
   return new StubLlmProvider((req: LlmRequest) => {
+    if (req.jsonSchema.name === "voice_briefs") {
+      // One plain brief per character listed ("- Name; …" lines), as the real model is asked to.
+      const names = [...req.user.matchAll(/^- (.+?)(?: \(also: .*?\))?(?:;.*)?$/gm)].map((m) => m[1]!);
+      return JSON.stringify({ voices: names.map((name) => ({ name, brief: `A clear, steady adult voice of middle pitch and even pace, for ${name}.`.slice(0, 300) })) });
+    }
     if (req.jsonSchema.name === "chunk_characters") {
       return JSON.stringify({ characters: [{ name: STUB_CHARACTER, aliases: [], genderPresentation: "unstated", ageBand: "adult", description: "Speaks every line in stub mode.", speaks: true }] });
     }

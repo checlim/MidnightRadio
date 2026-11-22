@@ -1,12 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { SfxCatalogue, VoiceCatalogue } from "@midnight-radio/core";
+import type { ClonableCatalogue, SfxCatalogue } from "@midnight-radio/core";
 import type { BudgetLedger } from "@midnight-radio/db";
 import { ingestEpub } from "@midnight-radio/ingest";
 import type { LlmProvider } from "@midnight-radio/llm";
 import type { FfmpegOptions } from "@midnight-radio/mix";
-import type { TtsProvider } from "@midnight-radio/tts";
+import type { TtsProvider, VoiceDesignPin, VoiceDesigner } from "@midnight-radio/tts";
 import { BudgetStopError, GenerateError, castBook, produceEpisode } from "./generate/pipeline.js";
 import { planBook, sha256Hex } from "./generate/plan.js";
 import { PermanentJobError, isFatalJobError } from "./jobs/errors.js";
@@ -27,9 +27,14 @@ export interface HandlerDeps {
 export interface GenerationServices {
   /** Null when no LLM is configured: casting and adaptation then fail with a clear message. */
   llm: LlmProvider | null;
-  /** Connects on first use, so the worker can start before the local audio service. */
-  tts: () => Promise<TtsProvider>;
-  voices: VoiceCatalogue;
+  /** Connect on first use, so the worker can start before the speech server. */
+  ttsFor: (catalogue: ClonableCatalogue, clipDir: string) => Promise<TtsProvider>;
+  designer: () => Promise<VoiceDesigner>;
+  series: ClonableCatalogue;
+  seriesDir: string;
+  designPin: VoiceDesignPin;
+  /** `<DATA_DIR>/voices`: each book's designed voices. */
+  voicesRoot: string;
   sfx: SfxCatalogue;
   sfxDir: string;
   styleGuide: string;
@@ -73,8 +78,12 @@ function episodeHandler(deps: HandlerDeps, services: GenerationServices): JobHan
       db: deps.db,
       ledger: deps.ledger,
       llm: services.llm,
-      tts: await services.tts(),
-      voices: services.voices,
+      ttsFor: services.ttsFor,
+      designer: services.designer,
+      series: services.series,
+      seriesDir: services.seriesDir,
+      designPin: services.designPin,
+      voicesRoot: services.voicesRoot,
       sfx: services.sfx,
       sfxDir: services.sfxDir,
       styleGuide: services.styleGuide,

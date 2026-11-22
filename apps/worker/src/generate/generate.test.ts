@@ -4,12 +4,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { STUB_VOICE_CATALOGUE, StationListSchema, type AdaptedScript, type SfxCatalogue, type Station } from "@midnight-radio/core";
+import { STUB_VOICE_CATALOGUE, StationListSchema, designedVoiceId, type AdaptedScript, type SfxCatalogue, type Station } from "@midnight-radio/core";
 import { BudgetLedger, loadCast, openDb, type BudgetConfig, type StoredCast } from "@midnight-radio/db";
 import { ingestEpub } from "@midnight-radio/ingest";
 import { buildEpub } from "@midnight-radio/ingest/src/test-support/build-epub.js";
 import { StubLlmProvider, type LlmRequest } from "@midnight-radio/llm";
-import { StubProvider, encodeWav, type QwenTtsOptions } from "@midnight-radio/tts";
+import { StubProvider, StubVoiceDesigner, TtsError, encodeWav, type QwenTtsOptions, type SynthesisRequest } from "@midnight-radio/tts";
+import { speechSpy, voiceDeps } from "./test-support.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { promptCast, speechLines, validationCast } from "./cast-lines.js";
 import { BudgetStopError, GenerateError, generateBook, needsLlm, type GenerateDeps } from "./pipeline.js";
@@ -53,6 +54,10 @@ const script = (n: number, dialogue: { speaker: string; text: string }[]): Adapt
 /** A model that casts the book and adapts each chapter correctly. `bad` makes every adaptation reply invent a line. */
 const model = (opts: { bad?: boolean } = {}) =>
   new StubLlmProvider((req: LlmRequest) => {
+    if (req.jsonSchema.name === "voice_briefs") {
+      const names = [...req.user.matchAll(/^- (.+?)(?: \(also: .*?\))?(?:;.*)?$/gm)].map((m) => m[1]!);
+      return JSON.stringify({ voices: names.map((name) => ({ name, brief: `A distinct, clear voice for ${name}, at an even pace.` })) });
+    }
     if (req.jsonSchema.name === "chunk_characters") {
       // Like a real model, it names only the characters in the excerpt it was given.
       const all = [character("Count Dracula", "masculine", "older"), character("Jonathan Harker", "masculine", "young-adult"), character("Mina Harker", "feminine", "young-adult")];
@@ -167,11 +172,12 @@ describe("stations", () => {
 
 describe("preflight", () => {
   let dir: string;
-  let paths: { voiceCatalogue: string; voiceClips: string; sfxIndex: string; styleGuide: string };
+  let paths: { voiceCatalogue: string; voiceClips: string; voiceDesignPin: string; sfxIndex: string; styleGuide: string };
   const sfx: SfxCatalogue = { version: 1, id: "lib", entries: [{ id: "theme_x", kind: "music", title: "Theme", path: "music/t.wav", sha256: "a".repeat(64), durationMs: 3000, loopable: false, peakDb: -1, tags: [], source: { type: "project", author: "x", licence: "CC0-1.0" } }], musicCues: { theme: "theme_x" } };
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "mr-preflight-"));
-    paths = { voiceCatalogue: join(dir, "voices.json"), voiceClips: dir, sfxIndex: join(dir, "index.json"), styleGuide: join(dir, "style.md") };
+    paths = { voiceCatalogue: join(dir, "voices.json"), voiceClips: dir, voiceDesignPin: join(dir, "voice-design.json"), sfxIndex: join(dir, "index.json"), styleGuide: join(dir, "style.md") };
+    await writeFile(paths.voiceDesignPin, JSON.stringify({ name: "design (float32)", revision: "d1" }));
     const clip = { file: "clips/a.wav", sha256: "b".repeat(64), transcript: "Good evening." };
     await writeFile(paths.voiceCatalogue, JSON.stringify({ ...STUB_VOICE_CATALOGUE, voices: STUB_VOICE_CATALOGUE.voices.map((v) => ({ ...v, description: v.description ?? "A voice.", clip })) }));
     await writeFile(paths.sfxIndex, JSON.stringify(sfx));
@@ -183,10 +189,13 @@ describe("preflight", () => {
   const GOOD_ENV = { LLM_API_KEY: "sk-test-key-0123456789", LLM_MODEL: "gpt-x", GLOBAL_DAILY_LLM_TOKEN_LIMIT: "1000000", GLOBAL_DAILY_TTS_CHAR_LIMIT: "1000000" };
   const okFetch = (async () => new Response(JSON.stringify({ data: [{ id: "gpt-x" }] }), { status: 200 })) as unknown as typeof fetch;
   const connectOk = async (o: QwenTtsOptions) => new StubProvider(o.catalogue.voices);
-  const hooks = { fetch: okFetch, connectTts: connectOk, hasProgram: () => true };
+  const designers: unknown[] = [];
+  const connectDesignerOk = async (o: unknown) => (designers.push(o), new StubVoiceDesigner());
+  const hooks = { fetch: okFetch, connectTts: connectOk, connectDesigner: connectDesignerOk, hasProgram: () => true };
+  const ALL = { llm: true, design: true };
 
   it("passes when everything is in place, and notes a library without sound effects", async () => {
-    const r = await preflight(GOOD_ENV, paths, true, hooks);
+    const r = await preflight(GOOD_ENV, paths, ALL, hooks);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.ready.llm?.id).toBe("openai-compatible:gpt-x");
@@ -197,7 +206,7 @@ describe("preflight", () => {
   it("lists every problem at once, before any paid call", async () => {
     let fetched = 0;
     await rm(paths.sfxIndex);
-    const r = await preflight({}, paths, true, {
+    const r = await preflight({}, paths, ALL, {
       fetch: (async () => {
         fetched++;
         return new Response(null, { status: 200 });
@@ -216,6 +225,7 @@ describe("preflight", () => {
         expect.stringMatching(/^no sound library at .*: run pnpm sfx:build/),
         "ffprobe is not on the PATH (macOS: brew install ffmpeg)",
         expect.stringMatching(/^Qwen3-TTS is not ready: the local audio service is not running\. Start the speech server/),
+        expect.stringMatching(/^voice design is not ready: /), // no designer hook: nothing is listening
       ]);
     }
     expect(fetched).toBe(0);
@@ -224,7 +234,7 @@ describe("preflight", () => {
   it("reports a refused key, a missing theme and an unusable voice catalogue", async () => {
     await writeFile(paths.sfxIndex, JSON.stringify({ ...sfx, musicCues: {} }));
     await writeFile(paths.voiceCatalogue, JSON.stringify(STUB_VOICE_CATALOGUE)); // no clips: cannot clone
-    const r = await preflight(GOOD_ENV, paths, true, { ...hooks, fetch: (async () => new Response(null, { status: 401 })) as unknown as typeof fetch });
+    const r = await preflight(GOOD_ENV, paths, ALL, { ...hooks, fetch: (async () => new Response(null, { status: 401 })) as unknown as typeof fetch });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.problems).toEqual([
@@ -237,8 +247,24 @@ describe("preflight", () => {
   });
 
   it("does not ask for an LLM when nothing is left to cast or adapt", async () => {
-    const r = await preflight({ GLOBAL_DAILY_TTS_CHAR_LIMIT: "1000" }, paths, false, hooks);
+    designers.length = 0;
+    const r = await preflight({ GLOBAL_DAILY_TTS_CHAR_LIMIT: "1000" }, paths, { llm: false, design: false }, hooks);
     expect(r.ok && r.ready.llm).toBe(null);
+    expect(designers).toEqual([]); // voice design is checked only while a book still needs its voices
+  });
+
+  it("checks voice design against the pinned build while a book still needs its voices", async () => {
+    const r = await preflight(GOOD_ENV, paths, ALL, {
+      ...hooks,
+      connectDesigner: async () => {
+        throw new Error("the speech service has no voice-design model (start it with voice design enabled)");
+      },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.problems).toEqual([expect.stringMatching(/^voice design is not ready: the speech service has no voice-design model .*start the speech server with its VoiceDesign model/)]);
+    await writeFile(paths.voiceDesignPin, "{ nope");
+    const broken = await preflight(GOOD_ENV, paths, { llm: true, design: false }, hooks);
+    expect(!broken.ok && broken.problems).toEqual([expect.stringMatching(/^the voice-design pin .* cannot be used/)]);
   });
 });
 
@@ -247,7 +273,9 @@ describe.skipIf(!hasFfmpeg)("generateBook end to end (stub model, stub voices, r
   let db: DatabaseSync;
   let bytes: Uint8Array;
   let deps: GenerateDeps;
-  let tts: StubProvider;
+  let tts: { requests: SynthesisRequest[] };
+  let designer: StubVoiceDesigner;
+  let v: Awaited<ReturnType<typeof voiceDeps>>;
   const logs: string[] = [];
 
   beforeEach(async () => {
@@ -258,9 +286,12 @@ describe.skipIf(!hasFfmpeg)("generateBook end to end (stub model, stub voices, r
     await mkdir(join(sfxDir, "music"), { recursive: true });
     await writeFile(join(sfxDir, "music/theme.wav"), encodeWav(Int16Array.from({ length: 2 * RATE }, (_, i) => Math.round(8000 * Math.sin((2 * Math.PI * 196 * i) / RATE) * Math.min(1, i / 2400, (2 * RATE - i) / 2400)))));
     const sfx: SfxCatalogue = { version: 1, id: "lib", entries: [{ id: "theme_x", kind: "music", title: "Theme", path: "music/theme.wav", sha256: "a".repeat(64), durationMs: 2000, loopable: false, peakDb: -1, tags: [], source: { type: "project", author: "x", licence: "CC0-1.0" } }], musicCues: { theme: "theme_x" } };
-    tts = new StubProvider();
+    const speech = speechSpy();
+    tts = speech;
+    v = await voiceDeps(dir);
+    designer = v.designer;
     logs.length = 0;
-    deps = { db, ledger: new BudgetLedger(db, BUDGET), llm: model(), tts, voices: STUB_VOICE_CATALOGUE, sfx, sfxDir, styleGuide: "# Style", cacheDir: join(dir, "cache"), broadcastDir: join(dir, "public"), log: (m) => logs.push(m), ff: { log: () => {} }, delay: async () => undefined };
+    deps = { db, ledger: new BudgetLedger(db, BUDGET), llm: model(), ttsFor: speech.ttsFor, designer: v.designerFn, series: v.series, seriesDir: v.seriesDir, designPin: v.designPin, voicesRoot: v.voicesRoot, sfx, sfxDir, styleGuide: "# Style", cacheDir: join(dir, "cache"), broadcastDir: join(dir, "public"), log: (m) => logs.push(m), ff: { log: () => {} }, delay: async () => undefined };
   });
   afterEach(async () => {
     db.close();
@@ -296,6 +327,34 @@ describe.skipIf(!hasFfmpeg)("generateBook end to end (stub model, stub voices, r
     expect(second[0]).toMatchObject({ episodeNumber: 2, status: "ready", reused: false });
     expect(llm.requests.slice(calls).map((r) => r.jsonSchema.name)).toEqual(["radio_script"]);
     expect((await stations()).map((s) => s.episodeNumber)).toEqual([1, 2]);
+  }, 120_000);
+
+  it("designs a voice for every speaking character from their brief, casts each on their own, and renders with them", async () => {
+    const p = await plan();
+    await generateBook(p, { chapters: new Set([1]), charBudget: 50_000 }, deps);
+    const cast = loadCast(db, p.bookId)!;
+    expect(cast.pin.catalogueId).toBe(`book-${p.bookId}`);
+    expect(cast.characters.map((c) => [c.name, c.voiceId])).toEqual(expect.arrayContaining([["Count Dracula", designedVoiceId("Count Dracula")], ["Jonathan Harker", designedVoiceId("Jonathan Harker")], ["Mina Harker", designedVoiceId("Mina Harker")]]));
+    expect(designer.requests.map((r) => r.instruct).sort()).toEqual(["Count Dracula", "Jonathan Harker", "Mina Harker"].map((n) => `A distinct, clear voice for ${n}, at an even pace.`));
+    expect(tts.requests.filter((r) => r.voiceId === designedVoiceId("Count Dracula")).map((r) => r.text)).toEqual(["Welcome to my house!"]);
+    expect(tts.requests.some((r) => r.voiceId === v.series.reserved.narrator)).toBe(true); // the series Narrator
+    expect(existsSync(join(dir, "voices", p.bookId, "catalogue.json"))).toBe(true);
+    const llm = deps.llm as StubLlmProvider;
+    expect(llm.requests.filter((r) => r.jsonSchema.name === "voice_briefs")).toHaveLength(1);
+    const designs = designer.requests.length;
+    await generateBook(p, { chapters: new Set([2]), charBudget: 50_000 }, deps);
+    expect(designer.requests.length).toBe(designs); // voices are designed once per book
+  }, 120_000);
+
+  it("after a crash before the voices were designed, resumes without casting or writing briefs again", async () => {
+    const p = await plan();
+    const failing = { ...deps, designer: async () => Promise.reject(new TtsError("unavailable", "the speech service has no voice-design model", false, false)) };
+    await expect(generateBook(p, { chapters: new Set([1]), charBudget: 50_000 }, failing)).rejects.toThrow(/voice design is not available/);
+    const llm = deps.llm as StubLlmProvider;
+    const calls = llm.requests.map((r) => r.jsonSchema.name);
+    expect(calls).toContain("voice_briefs");
+    await generateBook(p, { chapters: new Set([1]), charBudget: 50_000 }, deps);
+    expect(llm.requests.slice(calls.length).map((r) => r.jsonSchema.name)).toEqual(["radio_script"]);
   }, 120_000);
 
   it("re-renders and re-mixes an episode whose files are gone, from the stored Script and cached lines", async () => {

@@ -1,4 +1,8 @@
-import { loadVoiceCatalogue } from "@midnight-radio/worker";
+import { join } from "node:path";
+import type { ClonableCatalogue } from "@midnight-radio/core";
+import { loadCast } from "@midnight-radio/db";
+import { loadBookCatalogue, loadSeriesCatalogue } from "@midnight-radio/worker";
+import type { WebConfig } from "./config";
 import { HttpError, bookView, editCast, readCapped, startGeneration, toResponse, uploadBook } from "./books";
 import { guarded } from "./guard";
 
@@ -20,6 +24,14 @@ async function bookId(ctx: Params): Promise<string> {
   const { id } = await ctx.params;
   if (!BOOK_ID.test(id)) throw new HttpError(404, "There is no such book.");
   return id;
+}
+
+/** The voices a book can use: the catalogue its Cast is pinned to (its own designed voices, or the series voices for an older book). */
+async function bookVoices(config: WebConfig, db: import("node:sqlite").DatabaseSync, bookId: string): Promise<ClonableCatalogue> {
+  const series = loadSeriesCatalogue(config.repoRoot);
+  const cast = loadCast(db, bookId);
+  if (!cast) return series;
+  return (await loadBookCatalogue(join(config.dataDir, "voices"), bookId, series, join(config.repoRoot, "assets/voices"), cast.pin)).catalogue;
 }
 
 async function jsonBody(request: Request): Promise<unknown> {
@@ -45,9 +57,10 @@ export const uploadRoute = (request: Request) =>
 export const bookRoute = (request: Request, ctx: Params) =>
   guarded(request, "read", async ({ config, db }) => {
     try {
-      const book = bookView(db(), config, await bookId(ctx));
+      const id = await bookId(ctx);
+      const book = bookView(db(), config, id);
       if (!book) throw new HttpError(404, "There is no such book.");
-      const voices = loadVoiceCatalogue(config.stubProviders, config.repoRoot).voices.map(({ id, name, gender, ageBands, description }) => ({ id, name, gender, ageBands, description: description ?? null }));
+      const voices = (await bookVoices(config, db(), id)).voices.map(({ id, name, gender, ageBands, description }) => ({ id, name, gender, ageBands, description: description ?? null }));
       return Response.json({ ...book, voices }, { headers: noStore });
     } catch (err) {
       return toResponse(err);
@@ -68,7 +81,7 @@ export const castRoute = (request: Request, ctx: Params) =>
   guarded(request, "write", async ({ config, db }) => {
     try {
       const id = await bookId(ctx);
-      return Response.json(editCast(db(), loadVoiceCatalogue(config.stubProviders, config.repoRoot), id, await jsonBody(request)), { headers: noStore });
+      return Response.json(editCast(db(), await bookVoices(config, db(), id), id, await jsonBody(request)), { headers: noStore });
     } catch (err) {
       return toResponse(err);
     }

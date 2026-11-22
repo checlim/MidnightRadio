@@ -7,4 +7,5 @@ export * from "./log.js";
 export * from "./worker.js";
 export * from "./generate/pipeline.js";
 export * from "./generate/plan.js";
-export { loadVoiceCatalogue } from "./generate/services.js";
+export { createConnectors, loadDesignPin, loadSeriesCatalogue, type Connectors } from "./generate/services.js";
+export * from "./generate/book-voices.js";

@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { SfxCatalogueSchema, VoiceCatalogueSchema, requireClonable, type SfxCatalogue, type VoiceCatalogue } from "@midnight-radio/core";
+import { SfxCatalogueSchema, VoiceCatalogueSchema, requireClonable, type ClonableCatalogue, type SfxCatalogue } from "@midnight-radio/core";
 import { loadBudgetConfig, type BudgetConfig } from "@midnight-radio/db";
 import { checkLlmAccess, createOpenAiCompatibleProvider, loadLlmConfig, loadStyleGuide, type LlmProvider } from "@midnight-radio/llm";
-import { QwenTtsProvider, loadQwenConfig, type QwenTtsOptions, type TtsProvider } from "@midnight-radio/tts";
+import { QwenTtsProvider, QwenVoiceDesigner, VoiceDesignPinSchema, loadQwenConfig, type QwenTtsOptions, type QwenVoiceDesignerOptions, type TtsProvider, type VoiceDesignPin, type VoiceDesigner } from "@midnight-radio/tts";
 
 /**
  * Everything the run needs, checked before any paid call. Every check runs, so one message lists
@@ -15,6 +15,8 @@ export interface PreflightPaths {
   voiceCatalogue: string;
   /** The folder the catalogue's clip paths are relative to. */
   voiceClips: string;
+  /** The voice-design pin (`assets/voices/voice-design.json`). */
+  voiceDesignPin: string;
   sfxIndex: string;
   styleGuide: string;
 }
@@ -22,8 +24,11 @@ export interface PreflightPaths {
 export interface Ready {
   budget: BudgetConfig;
   llm: LlmProvider | null;
+  /** Connected with the series catalogue, which proves the speech server runs the pinned voice-clone build. */
   tts: TtsProvider;
-  voices: VoiceCatalogue;
+  /** The series catalogue (Announcer, Narrator, voice-clone pin). */
+  voices: ClonableCatalogue;
+  designPin: VoiceDesignPin;
   sfx: SfxCatalogue;
   styleGuide: string;
   /** Things worth knowing that do not stop the run. */
@@ -32,6 +37,7 @@ export interface Ready {
 
 export interface PreflightHooks {
   connectTts?: (opts: QwenTtsOptions) => Promise<TtsProvider>;
+  connectDesigner?: (opts: QwenVoiceDesignerOptions) => Promise<VoiceDesigner>;
   fetch?: typeof fetch;
   hasProgram?: (name: string) => boolean;
 }
@@ -39,21 +45,27 @@ export interface PreflightHooks {
 const programOnPath = (name: string) => spawnSync(name, ["-version"], { stdio: "ignore" }).status === 0;
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-export async function preflight(env: Record<string, string | undefined>, paths: PreflightPaths, needsLlm: boolean, hooks: PreflightHooks = {}): Promise<{ ok: true; ready: Ready } | { ok: false; problems: string[] }> {
+/** What this run still has to do: call the LLM (cast or adapt), and design a book's voices (it has no Cast yet). */
+export interface PreflightNeeds {
+  llm: boolean;
+  design: boolean;
+}
+
+export async function preflight(env: Record<string, string | undefined>, paths: PreflightPaths, needs: PreflightNeeds, hooks: PreflightHooks = {}): Promise<{ ok: true; ready: Ready } | { ok: false; problems: string[] }> {
   const problems: string[] = [];
   const notes: string[] = [];
 
   let budget: BudgetConfig | null = null;
   try {
     budget = loadBudgetConfig(env);
-    if (needsLlm && budget.dailyLlmTokens === 0) problems.push("LLM calls are switched off: set GLOBAL_DAILY_LLM_TOKEN_LIMIT in .env (tokens per UTC day, e.g. 2000000)");
+    if (needs.llm && budget.dailyLlmTokens === 0) problems.push("LLM calls are switched off: set GLOBAL_DAILY_LLM_TOKEN_LIMIT in .env (tokens per UTC day, e.g. 2000000)");
     if (budget.dailyTtsChars === 0) problems.push("speech rendering is switched off: set GLOBAL_DAILY_TTS_CHAR_LIMIT in .env (characters per UTC day, e.g. 1000000)");
   } catch (err) {
     problems.push(messageOf(err));
   }
 
   let llm: LlmProvider | null = null;
-  if (needsLlm) {
+  if (needs.llm) {
     try {
       const config = loadLlmConfig(env);
       if (!config) problems.push("no LLM configured: set LLM_API_KEY and LLM_MODEL in .env (and LLM_BASE_URL for an endpoint other than OpenAI)");
@@ -71,7 +83,7 @@ export async function preflight(env: Record<string, string | undefined>, paths: 
     }
   }
 
-  let voices: VoiceCatalogue | null = null;
+  let voices: ClonableCatalogue | null = null;
   try {
     voices = requireClonable(VoiceCatalogueSchema.parse(JSON.parse(readFileSync(paths.voiceCatalogue, "utf8"))));
   } catch (err) {
@@ -110,6 +122,21 @@ export async function preflight(env: Record<string, string | undefined>, paths: 
     }
   }
 
-  if (problems.length > 0 || !budget || !voices || !sfx || !styleGuide || !tts) return { ok: false, problems };
-  return { ok: true, ready: { budget, llm, tts, voices, sfx, styleGuide, notes } };
+  let designPin: VoiceDesignPin | null = null;
+  try {
+    designPin = VoiceDesignPinSchema.parse(JSON.parse(readFileSync(paths.voiceDesignPin, "utf8")));
+  } catch (err) {
+    problems.push(`the voice-design pin ${paths.voiceDesignPin} cannot be used: ${messageOf(err).split("\n")[0]}`);
+  }
+  if (needs.design && designPin) {
+    try {
+      const q = loadQwenConfig(env);
+      await (hooks.connectDesigner ?? QwenVoiceDesigner.connect.bind(QwenVoiceDesigner))({ baseUrl: q.baseUrl, token: q.token, pin: designPin });
+    } catch (err) {
+      problems.push(`voice design is not ready: ${messageOf(err)}. Each new book's character voices are designed first: start the speech server with its VoiceDesign model (services/local-audio/kaggle)`);
+    }
+  }
+
+  if (problems.length > 0 || !budget || !voices || !sfx || !styleGuide || !tts || !designPin) return { ok: false, problems };
+  return { ok: true, ready: { budget, llm, tts, voices, designPin, sfx, styleGuide, notes } };
 }

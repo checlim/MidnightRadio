@@ -4,11 +4,12 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { CastingPausedError, ScriptSchema, buildCast, nameKey, type Script, type SfxCatalogue, type Station, type VoiceCatalogue } from "@midnight-radio/core";
+import { ScriptSchema, buildDesignedCast, nameKey, type ClonableCatalogue, type Script, type SfxCatalogue, type Station } from "@midnight-radio/core";
 import { OverBudgetError, loadCast, loadValidScript, storedAttempt, writeAdaptation, writeCast, type BudgetLedger, type StoredCast } from "@midnight-radio/db";
-import { LlmError, adaptWithRepair, extractCharacters, type LlmProvider } from "@midnight-radio/llm";
+import { LlmError, VoiceBriefError, adaptWithRepair, extractCharacters, writeVoiceBriefs, type LlmProvider } from "@midnight-radio/llm";
 import { mixEpisode, segmentsInOrder, type AudioFile, type FfmpegOptions } from "@midnight-radio/mix";
-import { RenderCache, planRender, renderSegments, type SegmentOutcome, type TtsProvider } from "@midnight-radio/tts";
+import { RenderCache, TtsError, planRender, renderSegments, type SegmentOutcome, type TtsProvider, type VoiceDesignPin, type VoiceDesigner } from "@midnight-radio/tts";
+import { VoiceDesignError, designBookVoices, loadBookCatalogue, readVoicesPlan, writeVoicesPlan } from "./book-voices.js";
 import { promptCast, speechLines, validationCast } from "./cast-lines.js";
 import type { BookPlan, PlannedEpisode } from "./plan.js";
 import { mergeStations, readStations, writeStations } from "./stations.js";
@@ -43,8 +44,17 @@ export interface GenerateDeps {
   ledger: BudgetLedger;
   /** Needed only while something is left to cast or adapt (see `needsLlm`). */
   llm: LlmProvider | null;
-  tts: TtsProvider;
-  voices: VoiceCatalogue;
+  /** Connects the speech provider for a book's catalogue: its own voices, or the series voices. */
+  ttsFor: (catalogue: ClonableCatalogue, clipDir: string) => Promise<TtsProvider>;
+  /** Connects the voice designer; called only while a book's voices are still to be designed. */
+  designer: () => Promise<VoiceDesigner>;
+  /** The series catalogue (Announcer, Narrator, the voice-clone pin) and its clip folder. */
+  series: ClonableCatalogue;
+  seriesDir: string;
+  /** The voice-design build (`assets/voices/voice-design.json`). */
+  designPin: VoiceDesignPin;
+  /** `<DATA_DIR>/voices`: each book's designed voices. */
+  voicesRoot: string;
   sfx: SfxCatalogue;
   sfxDir: string;
   styleGuide: string;
@@ -151,33 +161,69 @@ const stopOn = (err: unknown): never => {
   throw err;
 };
 
-/** The Book's Cast: the stored one, or a new one from the whole book (casting once, Req 2.1–2.3). */
+/**
+ * The Book's Cast: the stored one, or a new one (casting once, Req 2.1–2.3). A new Cast reads the
+ * whole book for its characters, has the LLM write a voice brief for every speaking character,
+ * designs each voice from its brief, and casts every character on their own voice; the Announcer
+ * and Narrator keep the series voices. The inventory and briefs are saved before any voice is
+ * designed, so a rerun repeats no paid step.
+ */
 export async function castBook(plan: BookPlan, deps: GenerateDeps): Promise<StoredCast> {
   const existing = loadCast(deps.db, plan.bookId);
   if (existing) return existing;
-  if (!deps.llm) throw new GenerateError("the book has no Cast yet and no LLM is configured");
-  const chapters = [...new Map(plan.episodes.map((e) => [e.chapter.idx, { idx: e.chapter.idx, canonicalText: e.chapter.canonicalText }])).values()];
-  deps.log(`casting: reading the whole book (${chapters.length} chapters) for its characters`);
-  const extracted = await extractCharacters({
-    provider: deps.llm,
-    ledger: deps.ledger,
-    bookId: plan.bookId,
-    chapters,
-    onProgress: (done, total) => deps.log(`casting: ${done}/${total} excerpts read`),
-    ...jobFields(deps),
-    ...(deps.delay ? { delay: deps.delay } : {}),
-  }).catch(stopOn);
-  let members;
-  let pin;
+  let voicesPlan = await readVoicesPlan(deps.voicesRoot, plan.bookId);
+  if (!voicesPlan) {
+    if (!deps.llm) throw new GenerateError("the book has no Cast yet and no LLM is configured");
+    const chapters = [...new Map(plan.episodes.map((e) => [e.chapter.idx, { idx: e.chapter.idx, canonicalText: e.chapter.canonicalText }])).values()];
+    deps.log(`casting: reading the whole book (${chapters.length} chapters) for its characters`);
+    const extracted = await extractCharacters({
+      provider: deps.llm,
+      ledger: deps.ledger,
+      bookId: plan.bookId,
+      chapters,
+      onProgress: (done, total) => deps.log(`casting: ${done}/${total} excerpts read`),
+      ...jobFields(deps),
+      ...(deps.delay ? { delay: deps.delay } : {}),
+    }).catch(stopOn);
+    const speakers = extracted.inventory.filter((c) => c.speaks);
+    deps.log(`voices: writing a voice brief for each of ${speakers.length} speaking character(s)`);
+    const briefs = await writeVoiceBriefs({
+      provider: deps.llm,
+      ledger: deps.ledger,
+      bookId: plan.bookId,
+      book: { title: plan.title, author: plan.author },
+      characters: speakers.map((c) => ({ name: c.name, aliases: c.aliases, genderPresentation: c.genderPresentation, ageBand: c.ageBand, description: c.description })),
+      ...jobFields(deps),
+      ...(deps.delay ? { delay: deps.delay } : {}),
+    }).catch((err: unknown) => {
+      if (err instanceof VoiceBriefError) throw new GenerateError(`casting stopped: ${err.message}`);
+      return stopOn(err);
+    });
+    deps.fence?.();
+    await writeVoicesPlan(deps.voicesRoot, plan.bookId, extracted.inventory, briefs);
+    voicesPlan = { version: 1, inventory: extracted.inventory, briefs: Object.fromEntries(briefs) };
+  }
+  const needsDesign = voicesPlan.inventory.some((c) => c.speaks);
+  let designer: VoiceDesigner | null = null;
+  if (needsDesign) {
+    try {
+      designer = await deps.designer();
+    } catch (err) {
+      if (err instanceof TtsError && !err.retryable) throw new GenerateError(`voice design is not available: ${err.message}`);
+      throw err;
+    }
+  }
+  let designed;
   try {
-    ({ pin, members } = buildCast(extracted.inventory, deps.voices));
+    designed = await designBookVoices(plan.bookId, voicesPlan, designer, { voicesRoot: deps.voicesRoot, series: deps.series, seriesDir: deps.seriesDir, designPin: deps.designPin, log: deps.log, ...(deps.fence ? { fence: deps.fence } : {}), ...(deps.signal ? { signal: deps.signal } : {}) });
   } catch (err) {
-    if (err instanceof CastingPausedError) throw new GenerateError(`casting stopped: ${err.message}`);
+    if (err instanceof VoiceDesignError) throw new GenerateError(`casting stopped: ${err.message}`);
     throw err;
   }
+  const { pin, members } = buildDesignedCast(voicesPlan.inventory, designed.catalogue, designed.voiceFor);
   publishOf(deps)((db) => writeCast(db, plan.bookId, pin, members));
   const cast = loadCast(deps.db, plan.bookId)!;
-  deps.log(`cast: ${cast.characters.length} characters, ${cast.characters.filter((c) => c.voiceId).length} with voices`);
+  deps.log(`cast: ${cast.characters.length} characters, ${cast.characters.filter((c) => c.voiceId).length} with their own designed voice`);
   return cast;
 }
 
@@ -258,10 +304,19 @@ function markRendered(db: DatabaseSync, scriptId: string, script: Script, outcom
 }
 
 async function renderAndMix(plan: BookPlan, e: PlannedEpisode, script: Script, scriptId: string, cast: StoredCast, deps: GenerateDeps): Promise<{ durationMs: number } | { failed: string }> {
+  // The speech provider for this book's own voices (the catalogue its Cast is pinned to).
+  let tts: TtsProvider;
+  try {
+    const { catalogue, clipDir } = await loadBookCatalogue(deps.voicesRoot, plan.bookId, deps.series, deps.seriesDir, cast.pin);
+    tts = await deps.ttsFor(catalogue, clipDir);
+  } catch (err) {
+    if (err instanceof VoiceDesignError) throw new GenerateError(err.message);
+    throw err;
+  }
   // One cache view per episode, so every reservation records its chapter (Req 8.4).
   const cache = new RenderCache({
     dir: deps.cacheDir,
-    provider: deps.tts,
+    provider: tts,
     around: (info, call) =>
       deps.ledger.withReservation(
         { bookId: plan.bookId, chapterId: e.chapterId, ...(deps.jobId ? { jobId: deps.jobId } : {}), ttsChars: info.chars },
@@ -308,7 +363,7 @@ async function renderAndMix(plan: BookPlan, e: PlannedEpisode, script: Script, s
           album: `Midnight Radio: ${plan.title}`,
           artist: plan.author ?? "Unknown author",
           track: e.episodeNumber,
-          aiDisclosure: `AI-generated radio adaptation: script by a language model from the book's text, voices by ${deps.tts.identity.model}.`,
+          aiDisclosure: `AI-generated radio adaptation: script by a language model from the book's text, voices by ${tts.identity.model}.`,
         },
       },
       deps.ff,

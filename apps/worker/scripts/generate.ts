@@ -6,7 +6,8 @@
  * Reads settings from the environment or the repo's .env. Checks everything first (LLM key and
  * model, daily caps, the voice catalogue, Qwen3-TTS on LOCAL_AUDIO_URL, the sound library with a
  * pinned theme, ffmpeg) and stops with a list of what to fix before any paid call. Then casts the
- * whole book once, adapts each chosen chapter (with repair), renders its speech, mixes it and
+ * whole book once (the LLM writes a voice brief for every speaking character and each voice is
+ * designed from it), adapts each chosen chapter (with repair), renders its speech, mixes it and
  * publishes it to <DATA_DIR>/broadcast/ (episodes and stations.json, served at /broadcast/). Run it again to resume: the Cast,
  * valid Scripts, rendered lines and finished episodes are kept in DATA_DIR.
  *
@@ -18,12 +19,13 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
-import { BudgetLedger, openDb } from "@midnight-radio/db";
+import { BudgetLedger, loadCast, openDb } from "@midnight-radio/db";
 import { IngestError, ingestEpub } from "@midnight-radio/ingest";
 import { BROADCAST_DIR, DB_FILE, RENDER_CACHE_DIR } from "../src/config.js";
 import { BudgetStopError, GenerateError, generateBook, needsLlm } from "../src/generate/pipeline.js";
 import { planBook, selectChapters } from "../src/generate/plan.js";
 import { preflight } from "../src/generate/preflight.js";
+import { createConnectors } from "../src/generate/services.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 if (existsSync(join(root, ".env"))) process.loadEnvFile(join(root, ".env"));
@@ -63,8 +65,8 @@ const db = openDb(join(dataDir, DB_FILE));
 try {
   const check = await preflight(
     process.env,
-    { voiceCatalogue: join(root, "assets/voices/catalogue.json"), voiceClips: join(root, "assets/voices"), sfxIndex: join(root, "assets/sfx/index.json"), styleGuide: join(root, ".kiro/steering/radio-voice.md") },
-    needsLlm(db, plan, { chapters, charBudget: 0 }),
+    { voiceCatalogue: join(root, "assets/voices/catalogue.json"), voiceClips: join(root, "assets/voices"), voiceDesignPin: join(root, "assets/voices/voice-design.json"), sfxIndex: join(root, "assets/sfx/index.json"), styleGuide: join(root, ".kiro/steering/radio-voice.md") },
+    { llm: needsLlm(db, plan, { chapters, charBudget: 0 }), design: !loadCast(db, plan.bookId) },
   );
   if (!check.ok) stop(`fix these first, then run again:\n${check.problems.map((p) => `  - ${p}`).join("\n")}`);
   const { ready } = check;
@@ -75,8 +77,11 @@ try {
     db,
     ledger: new BudgetLedger(db, ready.budget),
     llm: ready.llm,
-    tts: ready.tts,
-    voices: ready.voices,
+    ...createConnectors(process.env, false, ready.designPin),
+    series: ready.voices,
+    seriesDir: join(root, "assets/voices"),
+    designPin: ready.designPin,
+    voicesRoot: join(dataDir, "voices"),
     sfx: ready.sfx,
     sfxDir: join(root, "assets/sfx"),
     styleGuide: ready.styleGuide,
