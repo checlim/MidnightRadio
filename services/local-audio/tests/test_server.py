@@ -8,7 +8,7 @@ import unittest
 import wave
 
 from local_audio import API_VERSION, SERVICE_NAME
-from local_audio.backends import BackendError, FakeBackend
+from local_audio.backends import BackendError, FakeBackend, VoiceDesignRequest
 from local_audio.server import MAX_TTS_BODY_BYTES
 from tests.helpers import TRANSCRIPT, reference_wav, serving, tts_body, wav_info
 
@@ -323,6 +323,164 @@ class ModelUseTests(unittest.TestCase):
         self.assertEqual((status, payload["error"]["code"]), (500, "internal"))
         self.assertNotIn("secret", str(payload))
         self.assertNotIn("secret", "\n".join(logs.output))  # only the exception type is logged
+
+
+def design_body(**overrides) -> dict:
+    body = {"instruct": "A weary old sailor, gravelly and slow.", "text": "The tide is turning, and so am I.", "language": "English", "seed": 5}
+    body.update(overrides)
+    return body
+
+
+class NoDesign(FakeBackend):
+    def design_info(self):
+        return None
+
+
+class VoiceDesignTests(unittest.TestCase):
+    def test_health_reports_the_design_model_or_null(self):
+        with serving() as s:
+            body = s.json("GET", "/health")[1]
+        self.assertEqual(body["voiceDesign"], {"model": "fake-voice-design", "revision": "fake-design-1", "sampleRate": 24000, "ready": True})
+        with serving(backend=NoDesign()) as s:
+            self.assertIsNone(s.json("GET", "/health")[1]["voiceDesign"])
+
+    def test_returns_a_wav_with_the_design_revision(self):
+        with serving() as s:
+            status, headers, data = s.request("POST", "/voice-design", design_body())
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "audio/wav")
+        self.assertEqual(headers["x-model-revision"], "fake-design-1")
+        self.assertIn("x-render-ms", headers)
+        info = wav_info(data)
+        self.assertEqual((info["rate"], info["channels"], info["width"], info["frames"]), (24000, 1, 2, 8 * 350 * 24))
+
+    def test_instruct_and_seed_change_the_audio_and_identical_requests_match(self):
+        with serving() as s:
+            a = s.request("POST", "/voice-design", design_body())[2]
+            again = s.request("POST", "/voice-design", design_body())[2]
+            other_instruct = s.request("POST", "/voice-design", design_body(instruct="A bright young nurse."))[2]
+            other_seed = s.request("POST", "/voice-design", design_body(seed=6))[2]
+        self.assertEqual(a, again)
+        self.assertNotEqual(a, other_instruct)
+        self.assertNotEqual(a, other_seed)
+
+    def test_the_backend_receives_the_request_fields(self):
+        seen = []
+
+        class Recording(FakeBackend):
+            def render_design(self, request):
+                seen.append(request)
+                return super().render_design(request)
+
+        with serving(backend=Recording()) as s:
+            s.request("POST", "/voice-design", design_body(seed=9, language="French"))
+        self.assertEqual(seen, [VoiceDesignRequest(design_body()["instruct"], design_body()["text"], "French", 9)])
+
+    def test_rejects_bad_requests(self):
+        def without(key):
+            body = design_body()
+            del body[key]
+            return body
+
+        cases = {
+            "no instruct": without("instruct"),
+            "blank instruct": design_body(instruct="  "),
+            "instruct too long": design_body(instruct="x" * 501),
+            "instruct not a string": design_body(instruct=4),
+            "no text": without("text"),
+            "blank text": design_body(text=" "),
+            "text too long": design_body(text="x" * 501),
+            "text not a string": design_body(text=None),
+            "no language": without("language"),
+            "blank language": design_body(language=" "),
+            "language too long": design_body(language="x" * 41),
+            "no seed": without("seed"),
+            "null seed": design_body(seed=None),
+            "negative seed": design_body(seed=-1),
+            "bool seed": design_body(seed=True),
+            "float seed": design_body(seed=1.5),
+            "seed too big": design_body(seed=2**31),
+            "unknown field": design_body(reference="x"),
+        }
+        with serving() as s:
+            for name, body in cases.items():
+                with self.subTest(case=name):
+                    got, payload = s.json("POST", "/voice-design", body)
+                    self.assertEqual((got, payload["error"]["code"]), (400, "bad_request"))
+
+    def test_limits_are_inclusive(self):
+        with serving() as s:
+            for body in (design_body(instruct="x" * 500), design_body(text="x" * 500), design_body(language="x" * 40), design_body(seed=0), design_body(seed=2**31 - 1)):
+                self.assertEqual(s.request("POST", "/voice-design", body)[0], 200)
+
+    def test_malformed_bodies_and_body_limit(self):
+        good = json.dumps(design_body()).encode("utf-8")
+        with serving() as s:
+            self.assertEqual(s.request("POST", "/voice-design", raw=b"{nope")[0], 400)
+            self.assertEqual(s.request("POST", "/voice-design", raw=b"[1]")[0], 400)
+            self.assertEqual(s.request("POST", "/voice-design", raw=good, headers={"Content-Type": "text/plain"})[0], 415)
+
+            def raw(request: bytes) -> str:
+                with socket.create_connection(("127.0.0.1", s.port), timeout=10) as sock:
+                    sock.sendall(request)
+                    return sock.recv(4096).decode("latin-1").split("\r\n")[0]
+
+            host = f"Host: 127.0.0.1:{s.port}\r\nContent-Type: application/json\r\n"
+            self.assertIn("413", raw(f"POST /voice-design HTTP/1.1\r\n{host}Content-Length: {64 * 1024 + 1}\r\n\r\n".encode()))
+            self.assertIn("411", raw(f"POST /voice-design HTTP/1.1\r\n{host}Transfer-Encoding: chunked\r\n\r\n".encode()))
+            self.assertIn("411", raw(f"POST /voice-design HTTP/1.1\r\n{host}\r\n".encode()))
+
+    def test_token_origin_and_method(self):
+        with serving(token=TOKEN) as s:
+            self.assertEqual(s.request("POST", "/voice-design", design_body())[0], 401)
+            self.assertEqual(s.request("POST", "/voice-design", design_body(), headers={"Authorization": "Bearer wrong-token-value-1234"})[0], 401)
+            self.assertEqual(s.request("POST", "/voice-design", design_body(), headers={"Authorization": f"Bearer {TOKEN}"})[0], 200)
+            self.assertEqual(s.request("POST", "/voice-design", design_body(), headers={"Authorization": f"Bearer {TOKEN}", "Origin": "https://evil.example"})[0], 403)
+            self.assertEqual(s.request("GET", "/voice-design", headers={"Authorization": f"Bearer {TOKEN}"})[0], 405)
+
+    def test_503_when_the_backend_has_no_design_model(self):
+        with serving(backend=NoDesign()) as s:
+            status, payload = s.json("POST", "/voice-design", design_body())
+            self.assertEqual((status, payload["error"]["code"]), (503, "not_ready"))
+            self.assertEqual(s.json("POST", "/voice-design", design_body(seed=-1))[0], 400)  # still validated first
+
+    def test_the_default_backend_method_answers_503(self):
+        class Bare(FakeBackend):
+            def design_info(self):
+                return {"model": "x", "revision": "r", "sampleRate": 24000, "ready": True}
+
+            def render_design(self, request):
+                return super(FakeBackend, self).render_design(request)
+
+        with serving(backend=Bare()) as s:
+            status, payload = s.json("POST", "/voice-design", design_body())
+        self.assertEqual((status, payload["error"]["code"]), (503, "not_ready"))
+
+    def test_shares_the_model_lock_with_tts(self):
+        backend = FakeBackend(delay_ms=600)
+        with serving(backend=backend, queue_timeout_s=0.2) as s:
+            first = threading.Thread(target=lambda: s.request("POST", "/tts", tts_body("Slow.")))
+            first.start()
+            time.sleep(0.15)
+            status, payload = s.json("POST", "/voice-design", design_body())
+            first.join()
+        self.assertEqual((status, payload["error"]["code"]), (503, "busy"))
+
+    def test_backend_failure_and_logs_never_leak_the_instruct_or_text(self):
+        instruct, text = "A secret-voice instruction.", "A very private line of dialogue."
+
+        class Boom(FakeBackend):
+            def render_design(self, request):
+                raise BackendError("model_failed", "the model could not render this voice", 502)
+
+        with serving(backend=Boom()) as s, self.assertLogs("local_audio", level="INFO") as logs:
+            status, payload = s.json("POST", "/voice-design", design_body(instruct=instruct, text=text))
+            bad = [s.request("POST", "/voice-design", design_body(instruct=instruct, text=text, seed=-1))[2].decode(), s.request("POST", "/voice-design", design_body(instruct=instruct, text=text, extra=1))[2].decode()]
+        self.assertEqual((status, payload["error"]["code"]), (502, "model_failed"))
+        everything = json.dumps(payload) + "\n".join(bad + logs.output)
+        for secret in (instruct, text, "secret-voice", "private line"):
+            self.assertNotIn(secret, everything)
+        self.assertIn("INFO:local_audio:POST /voice-design -> 502", logs.output)
 
 
 class SfxTests(unittest.TestCase):

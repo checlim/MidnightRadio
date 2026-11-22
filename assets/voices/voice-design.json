@@ -1,0 +1,6 @@
+{
+  "comment": "The voice-design build every book's character voices are designed with (docs/tts-service-api.md, POST /voice-design). Pinned like the voice-clone build in catalogue.json: the client refuses a server that reports anything else. The name carries the precision.",
+  "name": "Qwen3-TTS-12Hz-1.7B-VoiceDesign (float32)",
+  "revision": "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+  "weightsSha256": "391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522"
+}

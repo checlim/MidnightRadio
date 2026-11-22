@@ -9,7 +9,7 @@ import zlib
 from typing import Optional
 
 from ..wav import encode_wav
-from .base import Backend, SfxRequest, TtsRequest
+from .base import Backend, SfxRequest, TtsRequest, VoiceDesignRequest
 
 TTS_RATE = 24_000
 SFX_RATE = 48_000
@@ -27,6 +27,24 @@ class FakeBackend(Backend):
 
     def sfx_info(self) -> Optional[dict]:
         return {"model": "fake-sfx", "revision": "fake-1", "license": "CC0-1.0", "sampleRate": SFX_RATE, "ready": True}
+
+    def design_info(self) -> Optional[dict]:
+        return {"model": "fake-voice-design", "revision": "fake-design-1", "sampleRate": TTS_RATE, "ready": True}
+
+    def render_design(self, request: VoiceDesignRequest) -> bytes:
+        if self._delay:
+            time.sleep(self._delay)
+        words = max(1, len(request.text.split()))
+        frames = words * MS_PER_WORD * TTS_RATE // 1000
+        freq = 110 + zlib.crc32(request.instruct.encode("utf-8") + b"\0" + str(request.seed).encode("ascii")) % 220
+        fade = TTS_RATE // 100
+        samples = [
+            round(math.sin(2 * math.pi * freq * i / TTS_RATE) * 13_000 * max(0.0, min(1.0, i / fade, (frames - 1 - i) / fade)))
+            for i in range(frames)
+        ]
+        if not any(samples):
+            samples[frames // 2] = 1
+        return encode_wav(samples, TTS_RATE)
 
     def render_tts(self, request: TtsRequest) -> bytes:
         if self._delay:

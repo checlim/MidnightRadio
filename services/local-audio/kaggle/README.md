@@ -1,6 +1,6 @@
 # Speech service on a Kaggle GPU
 
-`qwen_tts_server.py` runs Qwen3-TTS (voice cloning) on a Kaggle GPU and implements the speech service API in `docs/tts-service-api.md`. A cloudflared quick tunnel makes it reachable from your Mac over https. It is used only while generating episodes.
+`qwen_tts_server.py` runs Qwen3-TTS (voice cloning) and the Qwen3-TTS VoiceDesign model (`POST /voice-design`, which turns a written voice description into a reference clip) on Kaggle GPUs and implements the speech service API in `docs/tts-service-api.md`. A cloudflared quick tunnel makes it reachable from your Mac over https. It is used only while generating episodes.
 
 Requirements checked when this guide was written:
 
@@ -29,7 +29,7 @@ from kaggle_secrets import UserSecretsClient
 os.environ["TTS_SERVICE_TOKEN"] = UserSecretsClient().get_secret("TTS_SERVICE_TOKEN")
 ```
 
-Cell 3: start the server in the background and wait until the model is loaded (the first start downloads about 4 GB and hashes the weights, so allow several minutes).
+Cell 3: start the server in the background and wait until the model is loaded (the first start downloads about 4 GB for the clone model plus about 4 GB more for the VoiceDesign model, and hashes both weights files, so allow several minutes). The two models load in separate background threads; `/health` reports each one's `ready` on its own.
 
 ```python
 import subprocess, time, json, urllib.request
@@ -50,8 +50,8 @@ for _ in range(120):
     if server.poll() is not None:
         print(open("/kaggle/working/server.log").read()[-3000:]); raise SystemExit("server exited")
     try:
-        info = health()["tts"]
-        if info["ready"]:
+        info = health()
+        if info["tts"]["ready"] and (info["voiceDesign"] is None or info["voiceDesign"]["ready"]):
             print(info); break
     except Exception:
         pass
@@ -59,7 +59,7 @@ else:
     print(open("/kaggle/working/server.log").read()[-3000:])
 ```
 
-The printed `weightsSha256` should be `38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c`. The server log prints a warning if it is not. The log never contains the token or request text.
+The health check now shows both models. `tts.weightsSha256` should be `38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c` and `voiceDesign.weightsSha256` should be `391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522` (VoiceDesign revision `5ecdb67327fd37bb2e042aab12ff7391903235d3`). `voiceDesign` is `null` when you start with `--design-device none`. The server log prints a warning if a hash differs. The log never contains the token or request text.
 
 Cell 4: install and start the tunnel.
 
@@ -108,12 +108,15 @@ Upload one project clip, for example `assets/voices/clips/narrator.wav`, then ru
     --out /kaggle/working/bench
 ```
 
+Add `--design "<voice description>"` to also time one voice design (it loads the VoiceDesign model too, so it needs the memory for both) and save it as `bench-design.wav`.
 It renders three English lines (short, medium, about 200 characters), each twice (the first run is a warm-up), prints characters, milliseconds, ms per character and real-time factor, and ends with `median X ms/char at dtype Y on <GPU>`. For comparison the Mac measured 118 ms/char. The WAVs are in `/kaggle/working/bench/`. Download and listen to them before generating a book.
 
 ## Notes
 
 - **Precision.** The default is `--dtype float32` because a T4 has no native bfloat16. `--dtype float16` is faster and may produce noise; listen to the bench WAVs before using it. `--dtype bfloat16` suits newer GPUs only.
-- **Two T4s.** You can start a second server with `--device cuda:1 --port 8766` and a second tunnel. The client uses one URL today, so the second GPU stays idle unless you run two generation jobs.
+- **Two T4s.** With the T4 x2 accelerator the server puts the VoiceDesign model on the second GPU by default (`--design-device` defaults to `cuda:1` when `torch.cuda.device_count() > 1`, else to `--device`). A voice design and a line of speech can then run at the same time. Models on the same device share one lock and run one at a time.
+- **One 16 GB GPU.** Both float32 models (about 7.7 GB each) may not fit together. Start with `--design-dtype float16` (listen to the result first), or with `--design-device none` and design voices in a separate session. `--design-model-dir DIR` uses a local VoiceDesign snapshot instead of downloading it.
+- **A second server** on `--device cuda:1 --port 8766 --design-device none` plus a second tunnel is still possible, but the client uses one URL today.
 - **Quick tunnels change URL every session.** Update `LOCAL_AUDIO_URL` after each restart.
 - **Sessions end** after inactivity and at the weekly GPU quota. Keep the notebook tab open while generating, and expect to rerun cells 2 to 4 afterwards. The model download is repeated unless you keep it in a Kaggle dataset and pass `--model-dir`.
 - **Security.** The server listens on 127.0.0.1 only, requires the token on every endpoint, and refuses browser requests (any `Origin` header). Anyone with the tunnel URL and the token can use your GPU, so keep both private and stop the tunnel when you finish (`tunnel.terminate()`).

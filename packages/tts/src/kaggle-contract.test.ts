@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TtsError } from "./provider.js";
 import { QwenTtsProvider } from "./qwen-provider.js";
+import { DESIGN_SENTENCE, QwenVoiceDesigner, checkDesignedClip } from "./voice-designer.js";
 import { clonableStubCatalogue, writeClips } from "./test-support/clonable-catalogue.js";
 import { validateWav } from "./wav.js";
 
@@ -34,9 +35,17 @@ class Model:
     def generate(self, text, language, prompt, seed):
         f = 180 + prompt % 300 + seed % 7
         return [0.3 * math.sin(2 * math.pi * f * i / 24000) for i in range(2400 + 120 * len(text))], 24000
-server = q.Server(q.Config(token=os.environ["TTS_SERVICE_TOKEN"], port=0), load_model=lambda c: q.LoadedModel(Model(), q.REVISION, q.EXPECTED_WEIGHTS_SHA256))
+class Designer:
+    def generate_design(self, instruct, text, language, seed):
+        f = 120 + sum(map(ord, instruct)) % 200 + seed % 5
+        return [0.3 * math.sin(2 * math.pi * f * i / 24000) for i in range(24000 * 3)], 24000
+server = q.Server(q.Config(token=os.environ["TTS_SERVICE_TOKEN"], port=0), load_model=lambda c: q.LoadedModel(Model(), q.REVISION, q.EXPECTED_WEIGHTS_SHA256), load_design_model=lambda c: q.LoadedModel(Designer(), q.DESIGN_REVISION, q.DESIGN_EXPECTED_WEIGHTS_SHA256))
 server.start_loading()
-server.loaded.wait(10)
+import time
+for _ in range(100):
+    if server.ready and server.design_ready:
+        break
+    time.sleep(0.1)
 print(json.dumps({"listening": "http://127.0.0.1:%d" % server.port}), flush=True)
 server.serve_forever()
 `;
@@ -101,6 +110,15 @@ describe.skipIf(!hasUv)("contract with the Kaggle speech server (stand-in model)
     expect((await failure(QwenTtsProvider.connect({ baseUrl, catalogue: pinned("Qwen3-TTS-12Hz-1.7B-Base (float16)"), clipDir, token: TOKEN }))).message).toMatch(/runs "Qwen3-TTS-12Hz-1.7B-Base \(float32\)", not the "Qwen3-TTS-12Hz-1.7B-Base \(float16\)"/);
     expect(await failure(QwenTtsProvider.connect({ baseUrl, catalogue, clipDir, token: "wrong-token-0123456789abcdef" }))).toMatchObject({ kind: "rejected" });
     expect(await failure(QwenTtsProvider.connect({ baseUrl, catalogue, clipDir }))).toMatchObject({ kind: "rejected" });
+  });
+
+  it("designs a voice with the pinned voice-design build, and the clip passes the reference checks", async () => {
+    const pin = { name: "Qwen3-TTS-12Hz-1.7B-VoiceDesign (float32)", revision: "5ecdb67327fd37bb2e042aab12ff7391903235d3", weightsSha256: "391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522" };
+    const designer = await QwenVoiceDesigner.connect({ baseUrl, token: TOKEN, pin });
+    const a = await designer.design({ instruct: "An aged nobleman; deep, slow and courtly.", text: DESIGN_SENTENCE, seed: 1940 });
+    expect(checkDesignedClip(a)).toEqual({ ok: true, durationMs: 3000 });
+    expect((await designer.design({ instruct: "A young maid; bright and quick.", text: DESIGN_SENTENCE, seed: 1940 })).equals(a)).toBe(false);
+    expect((await failure(QwenVoiceDesigner.connect({ baseUrl, token: TOKEN, pin: { ...pin, name: "Qwen3-TTS-12Hz-1.7B-VoiceDesign (float16)" } }))).message).toMatch(/not the pinned/);
   });
 
   it("refuses requests from a web page", async () => {

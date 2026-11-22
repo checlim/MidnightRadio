@@ -1,8 +1,10 @@
 # Speech service API (version 1)
 
-Midnight Radio speaks every line by **cloning a reference clip**: each voice in
-`assets/voices/catalogue.json` is a short clip and its transcript, and the service is asked to say
-a new line in that voice. The service is a plain speech engine. It holds no voices, catalogue or
+Midnight Radio speaks every line by **cloning a reference clip**: each voice is a short clip and
+its transcript, and the service is asked to say a new line in that voice. Each book's character
+voices are **designed** first: the service turns a written voice description into such a clip
+(`POST /voice-design`). The Announcer and Narrator keep the series voices in
+`assets/voices/catalogue.json`. The service is a plain speech engine. It holds no voices, catalogue or
 rules: every request carries the reference clip, and **all control stays with the client**
 (`packages/tts`), which decides which clip a voice uses, checks every clip against its recorded
 hash before sending it, checks that the server runs the exact model build the catalogue pins,
@@ -43,6 +45,13 @@ Answers `200` with JSON. Fields the client reads (others are ignored):
     "weightsSha256": "38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c",
     "sampleRate": 24000,
     "ready": true
+  },
+  "voiceDesign": {
+    "model": "Qwen3-TTS-12Hz-1.7B-VoiceDesign (float32)",
+    "revision": "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+    "weightsSha256": "391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522",
+    "sampleRate": 24000,
+    "ready": true
   }
 }
 ```
@@ -52,7 +61,11 @@ Answers `200` with JSON. Fields the client reads (others are ignored):
   from the file it loaded. The client refuses a server whose revision or weights hash differs from
   the catalogue's `voice-clone` pin, so one book never mixes audio from different weights.
 - `sampleRate`: must be `24000`.
-- `ready`: `false` while the model is loading; the client waits and asks again.
+- `ready`: `false` while the model is loading; the client waits and asks again. `weightsSha256`
+  may be `null` until then.
+- `voiceDesign`: the same fields for the voice-design model, or `null` if the server has none (it
+  then answers `POST /voice-design` with `503 not_ready`). The client designs voices only with the
+  build it pins (`assets/voices/voice-design.json`).
 
 ## `POST /tts`
 
@@ -83,6 +96,30 @@ not silent. Headers:
 
 - `X-Model-Revision`: the revision that rendered it (the client refuses audio if it changed).
 - `X-Render-Ms` (optional): how long the render took.
+
+## `POST /voice-design`
+
+Request body (`application/json`, at most 64 KB):
+
+```json
+{
+  "instruct": "An elderly East European nobleman; deep, slow and precise, with a courtly, faintly menacing warmth.",
+  "text": "Good evening. The night is cold, the road is long, and the old house waits at the end of it.",
+  "language": "English",
+  "seed": 1940
+}
+```
+
+| Field | Rules |
+|---|---|
+| `instruct` | The voice to design, 1 to 500 characters. Describes a voice; never names a real person. |
+| `text` | What the new voice says, 1 to 500 characters. |
+| `language` | e.g. `English`. |
+| `seed` | Integer 0 to 2,147,483,647, as for `/tts`. |
+
+**Success:** `200`, a WAV as for `/tts`, with `X-Model-Revision` set to the voice-design model's
+revision. The client checks it (length, silence, clipping) and uses it as the voice's reference
+clip; it retries with another seed if the clip is unusable.
 
 ## Errors
 

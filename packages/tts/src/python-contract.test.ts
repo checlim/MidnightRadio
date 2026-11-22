@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { QwenTtsProvider } from "./qwen-provider.js";
+import { DESIGN_SENTENCE, QwenVoiceDesigner, checkDesignedClip } from "./voice-designer.js";
 import { TtsError } from "./provider.js";
 import { RenderCache } from "./render-cache.js";
 import { clipBytes, clonableStubCatalogue } from "./test-support/clonable-catalogue.js";
@@ -130,6 +131,13 @@ describe.skipIf(!hasUv)("contract with the real Python service (fake backend)", 
     expect((await tts({ text: "Hi", language: "English", seed: 0, reference: { ...reference, audio: "not base64!" } })).status).toBe(400);
     expect((await tts({ text: "Hi", language: "English", seed: 0, reference: { ...reference, extra: 1 } })).status).toBe(400);
     expect((await tts({ text: "Hi", language: "English", seed: 0, reference })).status).toBe(200);
+  });
+
+  it("designs voices with its fake voice-design model", async () => {
+    const designer = await QwenVoiceDesigner.connect({ baseUrl, token: TOKEN, pin: { name: "fake-voice-design", revision: "fake-design-1" } });
+    const wav = await designer.design({ instruct: "A weary old sailor.", text: DESIGN_SENTENCE, seed: 3 });
+    expect(checkDesignedClip(wav).ok).toBe(true);
+    expect((await designer.design({ instruct: "A weary old sailor.", text: DESIGN_SENTENCE, seed: 3 })).equals(wav)).toBe(true);
   });
 
   it("serves sound effects as 48 kHz mono WAV (used by the foley task)", async () => {

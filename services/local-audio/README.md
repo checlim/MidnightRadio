@@ -36,8 +36,9 @@ uv run --no-project --python ">=3.10" python -m unittest discover -s tests -t .
 
 | Endpoint | Request | Answer |
 |---|---|---|
-| `GET /health` | none | JSON: service name, `apiVersion`, backend, and `tts` and `sfx` model info (`model`, `revision`, `sampleRate`, `ready`; `tts` from `qwen-mlx` also `weightsSha256`; `sfx` also `license`). There is no voice list. |
+| `GET /health` | none | JSON: service name, `apiVersion`, backend, and `tts`, `sfx` and `voiceDesign` model info (`model`, `revision`, `sampleRate`, `ready`; `tts` from `qwen-mlx` also `weightsSha256`; `sfx` also `license`). `voiceDesign` is `null` when the backend has no voice-design model (`qwen-mlx` has none). There is no voice list. |
 | `POST /tts` | JSON `{text, language, seed, reference: {audio, text}}`, up to 4 MB | `audio/wav` (24 kHz, mono, 16-bit) with `X-Model-Revision` and `X-Render-Ms`. `reference.audio` is base64 of a PCM 16-bit mono WAV (8 to 48 kHz, at most 30 s); `reference.text` is what it says (1 to 500 characters). `seed` is required. Full contract: [`docs/tts-service-api.md`](../../docs/tts-service-api.md). |
+| `POST /voice-design` | JSON `{instruct, text, language, seed}`, up to 64 KB. All four are required: `instruct` (the voice to design) and `text` 1 to 500 non-blank characters, `language` 1 to 40 characters, `seed` an integer 0 to 2147483647. Unknown fields are refused. | `audio/wav` (24 kHz, mono, 16-bit) with `X-Model-Revision` (the voice-design model's revision) and `X-Render-Ms`. `503 not_ready` when the backend has no voice-design model (every backend except `fake`). Same token, Origin and one-model-call-at-a-time rules as `/tts`; `instruct` and `text` are never logged or echoed. |
 | `POST /sfx` | JSON `{prompt, durationSec, seed?}` | `audio/wav` (mono, 16-bit) with `X-Model-Revision`. The full contract, which remote servers also follow, is [`docs/sfx-service-api.md`](../../docs/sfx-service-api.md). |
 
 Errors are JSON `{"error": {"code", "message"}}`: 400 bad request, 401 unauthorized, 403 bad host or origin, 404 unknown path, 405 wrong method, 411 and 413 and 415 for the body, 503 busy or not ready, 500 internal (no details).
@@ -48,7 +49,7 @@ It is a model server on a personal machine, so:
 
 - it listens on loopback only, and the `Host` header must name that address and port, which blocks DNS-rebinding pages;
 - any request carrying an `Origin` header (a web page) is refused;
-- only JSON, with a body limit (4 MB for `/tts`, which carries the reference clip; 64 KB for `/sfx`) and strict field checks;
+- only JSON, with a body limit (4 MB for `/tts`, which carries the reference clip; 64 KB for `/voice-design` and `/sfx`) and strict field checks;
 - the token is compared in constant time and is never logged or echoed;
 - one model call runs at a time; others wait, up to a time limit, then get 503;
 - logs contain the method, path and status only: never bodies, headers or tokens, so dialogue text is not logged;

@@ -36,6 +36,14 @@ class SfxRequest:
     seed: Optional[int]
 
 
+@dataclass(frozen=True)
+class VoiceDesignRequest:
+    instruct: str
+    text: str
+    language: str
+    seed: int
+
+
 class Backend(ABC):
     name: str
 
@@ -54,6 +62,14 @@ class Backend(ABC):
     @abstractmethod
     def render_sfx(self, request: SfxRequest) -> bytes:
         """A complete WAV: mono, 16-bit PCM."""
+
+    def design_info(self) -> Optional[dict]:
+        """Same shape for voice design, or None if this backend has no voice-design model."""
+        return None
+
+    def render_design(self, request: VoiceDesignRequest) -> bytes:
+        """A complete WAV (24 kHz, mono, 16-bit PCM) of `text` spoken in a voice made from `instruct`."""
+        raise BackendError("not_ready", "this backend has no voice-design model", 503)
 
     def close(self) -> None:
         """Release models and memory."""

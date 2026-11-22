@@ -1,4 +1,4 @@
-"""HTTP API: GET /health, POST /tts, POST /sfx. /tts implements docs/tts-service-api.md.
+"""HTTP API: GET /health, POST /tts, POST /voice-design, POST /sfx. /tts and /voice-design implements docs/tts-service-api.md.
 
 Hardening, because this is a model server on a developer's machine:
 - bound to loopback by `config.py`; the Host header must name the loopback address and our port,
@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 
 from . import API_VERSION, SERVICE_NAME
-from .backends import Backend, BackendError, SfxRequest, TtsRequest
+from .backends import Backend, BackendError, SfxRequest, TtsRequest, VoiceDesignRequest
 from .config import Config
 
 log = logging.getLogger("local_audio")
@@ -31,6 +31,7 @@ MAX_BODY_BYTES = 64 * 1024
 MAX_TTS_BODY_BYTES = 4 * 1024 * 1024
 MAX_LANGUAGE_CHARS = 40
 MAX_REFERENCE_TEXT_CHARS = 500
+MAX_DESIGN_CHARS = 500
 MAX_REFERENCE_SECONDS = 30
 MIN_REFERENCE_RATE, MAX_REFERENCE_RATE = 8_000, 48_000
 MAX_SEED = 2**31 - 1
@@ -167,7 +168,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _route(self, method: str) -> None:
         path = self.path.split("?", 1)[0]
-        routes = {"/health": "GET", "/tts": "POST", "/sfx": "POST"}
+        routes = {"/health": "GET", "/tts": "POST", "/voice-design": "POST", "/sfx": "POST"}
         if path not in routes:
             raise HttpError(404, "not_found", "no such endpoint")
         if routes[path] != method:
@@ -176,7 +177,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/health":
             return self._health()
         body = self._read_json(MAX_TTS_BODY_BYTES if path == "/tts" else MAX_BODY_BYTES)
-        return self._tts(body) if path == "/tts" else self._sfx(body)
+        if path == "/tts":
+            return self._tts(body)
+        return self._design(body) if path == "/voice-design" else self._sfx(body)
 
     def _health(self) -> None:
         backend = self.server.backend
@@ -188,6 +191,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "backend": backend.name,
                 "tts": backend.tts_info(),
                 "sfx": backend.sfx_info(),
+                "voiceDesign": backend.design_info(),
             },
         )
 
@@ -218,6 +222,23 @@ class _Handler(BaseHTTPRequestHandler):
         request = TtsRequest(text, language, reference_wav, reference_text, seed)
         self._render(lambda: self.server.backend.render_tts(request), "tts")
 
+    def _design(self, body: dict) -> None:
+        _check_fields(body, {"instruct", "text", "language", "seed"})
+        for field in ("instruct", "text"):
+            value = body.get(field)
+            if not isinstance(value, str) or not value.strip() or len(value) > MAX_DESIGN_CHARS:
+                raise HttpError(400, "bad_request", f"{field} must be 1 to {MAX_DESIGN_CHARS} characters")
+        language = body.get("language")
+        if not isinstance(language, str) or not language.strip() or len(language) > MAX_LANGUAGE_CHARS:
+            raise HttpError(400, "bad_request", f"language must be 1 to {MAX_LANGUAGE_CHARS} characters")
+        if body.get("seed") is None:
+            raise HttpError(400, "bad_request", "seed is required")
+        seed = _seed(body)
+        if self.server.backend.design_info() is None:
+            raise HttpError(503, "not_ready", "this backend has no voice-design model")
+        request = VoiceDesignRequest(body["instruct"], body["text"], language, seed)
+        self._render(lambda: self.server.backend.render_design(request), "design")
+
     def _sfx(self, body: dict) -> None:
         _check_fields(body, {"prompt", "durationSec", "seed"})
         prompt = body.get("prompt")
@@ -239,7 +260,8 @@ class _Handler(BaseHTTPRequestHandler):
             wav = call()
         finally:
             self.server.model_lock.release()
-        info = (self.server.backend.tts_info() if kind == "tts" else self.server.backend.sfx_info()) or {}
+        backend = self.server.backend
+        info = {"tts": backend.tts_info, "design": backend.design_info, "sfx": backend.sfx_info}[kind]() or {}
         self._send(200, wav, "audio/wav", {"X-Model-Revision": str(info.get("revision", "")), "X-Render-Ms": str(round((time.monotonic() - started) * 1000))})
 
     # --- entry points ---------------------------------------------------------------------------

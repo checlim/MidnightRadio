@@ -57,7 +57,7 @@ const HealthSchema = z.looseObject({
   tts: z.object({ model: z.string().min(1).max(200), revision: z.string().min(1).max(200), weightsSha256: sha.nullish().transform((v) => v ?? undefined), sampleRate: z.number(), ready: z.boolean() }).nullable(),
 });
 
-const unavailable = (message: string, retryable = false, billed = false) => new TtsError("unavailable", message, billed, retryable);
+export const unavailable = (message: string, retryable = false, billed = false) => new TtsError("unavailable", message, billed, retryable);
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
@@ -229,10 +229,10 @@ export class QwenTtsProvider implements TtsProvider {
   }
 }
 
-const authHeaders = (token: string | undefined): Record<string, string> => (token ? { authorization: `Bearer ${token}` } : {});
+export const authHeaders = (token: string | undefined): Record<string, string> => (token ? { authorization: `Bearer ${token}` } : {});
 
 /** Map a failed request to a TtsError. Messages hold fixed text and codes only, never the request or the token. */
-function describeFetchFailure(err: unknown, callerSignal: AbortSignal | undefined, requestSent: boolean): TtsError {
+export function describeFetchFailure(err: unknown, callerSignal: AbortSignal | undefined, requestSent: boolean): TtsError {
   if (callerSignal?.aborted) return new TtsError("aborted", "render aborted", requestSent, false); // the service may still be rendering
   const name = (err as Error | undefined)?.name;
   if (name === "TimeoutError") return new TtsError("timeout", "the speech service did not answer in time", true, true);
@@ -241,7 +241,7 @@ function describeFetchFailure(err: unknown, callerSignal: AbortSignal | undefine
   return new TtsError("unavailable", "the connection to the speech service failed", requestSent, true);
 }
 
-async function failureFromResponse(res: Response): Promise<TtsError> {
+export async function failureFromResponse(res: Response): Promise<TtsError> {
   const body = (await res.json().catch(() => undefined)) as { error?: { code?: unknown } } | undefined;
   const raw = typeof body?.error?.code === "string" ? body.error.code : "";
   const code = /^[a-z_]{1,40}$/.test(raw) ? raw : "unknown";
@@ -252,7 +252,7 @@ async function failureFromResponse(res: Response): Promise<TtsError> {
   return new TtsError("service_error", `the speech service failed (HTTP ${s}, ${code})`, true, true);
 }
 
-async function readLimited(res: Response, max: number, signal: AbortSignal): Promise<Buffer> {
+export async function readLimited(res: Response, max: number, signal: AbortSignal): Promise<Buffer> {
   const declared = Number(res.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > max) {
     await res.body?.cancel().catch(() => undefined);

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Optional
 
-from .base import Backend, BackendError, BackendUnavailable, SfxRequest, TtsRequest
+from .base import Backend, BackendError, BackendUnavailable, SfxRequest, TtsRequest, VoiceDesignRequest
 from .fake import FakeBackend
 
 BACKENDS = ("fake", "qwen-mlx")
@@ -20,4 +20,4 @@ def create_backend(name: str, fake_delay_ms: int = 0, tts_model: Optional[Path] 
     raise BackendUnavailable(f"unknown backend '{name}' (choose one of: {', '.join(BACKENDS)})")
 
 
-__all__ = ["BACKENDS", "Backend", "BackendError", "BackendUnavailable", "FakeBackend", "SfxRequest", "TtsRequest", "create_backend"]
+__all__ = ["BACKENDS", "Backend", "BackendError", "BackendUnavailable", "FakeBackend", "SfxRequest", "TtsRequest", "VoiceDesignRequest", "create_backend"]

@@ -7,8 +7,10 @@ from the Midnight Radio repository and knows nothing about voices or catalogues:
 request carries its own reference clip. The contract is `docs/tts-service-api.md`.
 
     python qwen_tts_server.py serve --port 8765 [--dtype float32] [--attn sdpa] [--device cuda:0]
-                                    [--model-dir DIR]
+                                    [--model-dir DIR] [--design-device cuda:1|none]
+                                    [--design-dtype float32] [--design-model-dir DIR]
     python qwen_tts_server.py bench --reference clip.wav --reference-text "..." [--out ./bench]
+                                    [--design "<voice description>"]
 
 Security
 - The access token comes only from the environment variable TTS_SERVICE_TOKEN (at least 16
@@ -32,6 +34,11 @@ Model
   reported as `weightsSha256`; a different hash prints a warning.
 - The model loads in a background thread. /health answers ready=false and /tts answers 503
   not_ready until it is loaded.
+- A second pinned model, Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign at DESIGN_REVISION, serves
+  POST /voice-design (it turns a written voice description into a reference clip). It loads in its
+  own background thread, is reported as `voiceDesign` in /health (null when disabled with
+  `--design-device none`) and answers 503 not_ready until it is loaded. Each model has its own lock,
+  so a design and a clone can run at the same time on two GPUs; models on the same device share one.
 
 Benchmark reference: the Mac (MLX) measured 118 ms per character.
 """
@@ -66,11 +73,19 @@ REPO_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 MODEL_NAME = "Qwen3-TTS-12Hz-1.7B-Base"
 REVISION = "fd4b254389122332181a7c3db7f27e918eec64e3"
 EXPECTED_WEIGHTS_SHA256 = "38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c"
+DESIGN_REPO_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+DESIGN_MODEL_NAME = "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+DESIGN_REVISION = "5ecdb67327fd37bb2e042aab12ff7391903235d3"
+DESIGN_EXPECTED_WEIGHTS_SHA256 = "391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522"
 SAMPLE_RATE = 24000
 TOKEN_ENV = "TTS_SERVICE_TOKEN"
 MIN_TOKEN_CHARS = 16
 
 MAX_BODY_BYTES = 4 * 1024 * 1024
+MAX_DESIGN_BODY_BYTES = 64 * 1024
+MAX_DESIGN_CHARS = 500
+DESIGN_OFF = "none"
+BENCH_DESIGN_TEXT = "Good evening. The night is cold, the road is long, and the old house waits at the end of it."
 MAX_TEXT_CHARS = 4000
 MAX_REF_TEXT_CHARS = 500
 MAX_REF_SECONDS = 30
@@ -117,6 +132,18 @@ class Config:
     model_dir: Optional[str] = None
     host: str = "127.0.0.1"
     queue_timeout_s: float = 120.0
+    design_device: Optional[str] = None  # None: the same device as `device`; "none": no voice design
+    design_dtype: Optional[str] = None  # None: the same as `dtype`
+    design_model_dir: Optional[str] = None
+    @property
+    def design_enabled(self) -> bool:
+        return (self.design_device or "").lower() != DESIGN_OFF
+    @property
+    def effective_design_device(self) -> str:
+        return self.design_device or self.device
+    @property
+    def effective_design_dtype(self) -> str:
+        return self.design_dtype or self.dtype
 
 
 def validate_token(token: Optional[str]) -> str:
@@ -129,6 +156,19 @@ def reported_model_name(dtype: str) -> str:
     return MODEL_NAME if dtype == "bfloat16" else f"{MODEL_NAME} ({dtype})"
 
 
+def reported_design_model_name(dtype: str) -> str:
+    return DESIGN_MODEL_NAME if dtype == "bfloat16" else f"{DESIGN_MODEL_NAME} ({dtype})"
+def resolve_design_device(value: Optional[str], device: str) -> str:
+    """The design device: the given one, else cuda:1 when a second GPU exists, else the main device."""
+    if value is not None:
+        return value
+    try:
+        import torch
+        if torch.cuda.device_count() > 1:
+            return "cuda:1"
+    except Exception:  # noqa: BLE001 - no torch or no CUDA: share the main device
+        pass
+    return device
 # --- reference clip and output WAV (standard library only) ---------------------------------------
 
 
@@ -242,6 +282,13 @@ class Renderer:
             raise RenderFailed(type(err).__name__) from None
 
 
+class DesignRenderer:
+    """Not thread-safe by itself: callers hold the design model lock."""
+    def __init__(self, adapter: Any):
+        self.adapter = adapter
+    def render(self, instruct: str, text: str, language: str, seed: int) -> bytes:
+        samples, rate = Renderer._guard(lambda: self.adapter.generate_design(instruct, text, language, seed))
+        return encode_wav(samples, rate)
 # --- the real model (torch, numpy and qwen-tts are imported here, lazily) ---------------------------
 
 
@@ -253,12 +300,12 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def revision_of(model_dir: Path) -> str:
+def revision_of(model_dir: Path, default: str = REVISION) -> str:
     parts = model_dir.resolve().parts
     for i, part in enumerate(parts[:-1]):
         if part == "snapshots":
             return parts[i + 1]
-    return REVISION
+    return default
 
 
 class QwenAdapter:
@@ -272,13 +319,17 @@ class QwenAdapter:
                 return self.model.create_voice_clone_prompt(ref_audio=(audio, sample_rate), ref_text=ref_text, x_vector_only_mode=False)
 
     def generate(self, text: str, language: str, prompt: Any, seed: int) -> Any:
+        return self._run(seed, lambda: self.model.generate_voice_clone(text=text, language=language, voice_clone_prompt=prompt))
+    def generate_design(self, instruct: str, text: str, language: str, seed: int) -> Any:
+        return self._run(seed, lambda: self.model.generate_voice_design(text=text, language=language, instruct=instruct))
+    def _run(self, seed: int, call: Callable[[], Any]) -> Any:
         torch = self.torch
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
         with self._memory_guard():
             with torch.inference_mode():
-                wavs, rate = self.model.generate_voice_clone(text=text, language=language, voice_clone_prompt=prompt)
+                wavs, rate = call()
         wav = wavs[0]
         if hasattr(wav, "detach"):
             wav = wav.detach().cpu().float().numpy()
@@ -300,31 +351,31 @@ class QwenAdapter:
         return Guard()
 
 
-def load_real_model(config: Config) -> LoadedModel:
+def _load_pinned(repo_id: str, revision: str, expected_sha: str, model_dir: Optional[str], dtype: str, attn: str, device: str) -> LoadedModel:
     import numpy as np
     import torch
     from qwen_tts import Qwen3TTSModel
-
-    if config.model_dir:
-        model_dir = Path(config.model_dir)
+    if model_dir:
+        path = Path(model_dir)
     else:
         from huggingface_hub import snapshot_download
-
-        log.info("downloading %s at %s", REPO_ID, REVISION)
-        model_dir = Path(snapshot_download(repo_id=REPO_ID, revision=REVISION))
-    weights = model_dir / "model.safetensors"
+        log.info("downloading %s at %s", repo_id, revision)
+        path = Path(snapshot_download(repo_id=repo_id, revision=revision))
+    weights = path / "model.safetensors"
     if not weights.is_file():
         raise RuntimeError("model.safetensors not found in the model directory")
-    log.info("hashing model.safetensors")
+    log.info("hashing model.safetensors of %s", repo_id)
     weights_sha = sha256_file(weights)
-    if weights_sha != EXPECTED_WEIGHTS_SHA256:
-        log.warning("WARNING: model.safetensors hash %s differs from the expected %s", weights_sha, EXPECTED_WEIGHTS_SHA256)
-    revision = revision_of(model_dir)
-    log.info("loading the model (%s, %s, %s)", config.dtype, config.attn, config.device)
-    model = Qwen3TTSModel.from_pretrained(str(model_dir), device_map=config.device, dtype=getattr(torch, config.dtype), attn_implementation=config.attn)
-    return LoadedModel(QwenAdapter(model, torch, np), revision, weights_sha)
-
-
+    if weights_sha != expected_sha:
+        log.warning("WARNING: model.safetensors hash %s of %s differs from the expected %s", weights_sha, repo_id, expected_sha)
+    resolved = revision_of(path, revision)
+    log.info("loading %s (%s, %s, %s)", repo_id, dtype, attn, device)
+    model = Qwen3TTSModel.from_pretrained(str(path), device_map=device, dtype=getattr(torch, dtype), attn_implementation=attn)
+    return LoadedModel(QwenAdapter(model, torch, np), resolved, weights_sha)
+def load_real_model(config: Config) -> LoadedModel:
+    return _load_pinned(REPO_ID, REVISION, EXPECTED_WEIGHTS_SHA256, config.model_dir, config.dtype, config.attn, config.device)
+def load_real_design_model(config: Config) -> LoadedModel:
+    return _load_pinned(DESIGN_REPO_ID, DESIGN_REVISION, DESIGN_EXPECTED_WEIGHTS_SHA256, config.design_model_dir, config.effective_design_dtype, config.attn, config.effective_design_device)
 # --- HTTP server -------------------------------------------------------------------------------
 
 
@@ -335,32 +386,47 @@ def _is_int(value: Any) -> bool:
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
-
-    def __init__(self, config: Config, load_model: Callable[[Config], LoadedModel] = load_real_model):
+    def __init__(
+        self,
+        config: Config,
+        load_model: Callable[[Config], LoadedModel] = load_real_model,
+        load_design_model: Callable[[Config], LoadedModel] = load_real_design_model,
+    ):
         validate_token(config.token)
         super().__init__((config.host, config.port), _Handler)
         self.config = config
         self.load_model = load_model
+        self.load_design_model = load_design_model
         self.model_lock = threading.Lock()
+        # Two GPUs can work at once; two models on one device must not.
+        same_device = config.effective_design_device == config.device
+        self.design_lock = self.model_lock if same_device else threading.Lock()
         self.renderer: Optional[Renderer] = None
         self.revision = REVISION
         self.weights_sha256: Optional[str] = None
         self.loaded = threading.Event()
         self.load_failed = False
-
+        self.design_renderer: Optional[DesignRenderer] = None
+        self.design_revision = DESIGN_REVISION
+        self.design_weights_sha256: Optional[str] = None
+        self.design_loaded = threading.Event()
+        self.design_load_failed = False
     @property
     def port(self) -> int:
         return self.server_address[1]
-
     @property
     def ready(self) -> bool:
         return self.loaded.is_set() and self.renderer is not None
-
+    @property
+    def design_ready(self) -> bool:
+        return self.config.design_enabled and self.design_loaded.is_set() and self.design_renderer is not None
     def start_loading(self) -> threading.Thread:
+        """Starts one loader thread per model; returns the speech one."""
+        if self.config.design_enabled:
+            threading.Thread(target=self._load_design, name="design-model-loader", daemon=True).start()
         thread = threading.Thread(target=self._load, name="model-loader", daemon=True)
         thread.start()
         return thread
-
     def _load(self) -> None:
         try:
             loaded = self.load_model(self.config)
@@ -371,7 +437,16 @@ class Server(ThreadingHTTPServer):
         except Exception as err:  # noqa: BLE001
             self.load_failed = True
             log.error("model failed to load: %s", type(err).__name__)
-
+    def _load_design(self) -> None:
+        try:
+            loaded = self.load_design_model(self.config)
+            self.design_revision, self.design_weights_sha256 = loaded.revision, loaded.weights_sha256
+            self.design_renderer = DesignRenderer(loaded.adapter)
+            self.design_loaded.set()
+            log.info("voice-design model ready")
+        except Exception as err:  # noqa: BLE001
+            self.design_load_failed = True
+            log.error("voice-design model failed to load: %s", type(err).__name__)
     def tts_info(self) -> dict:
         return {
             "model": reported_model_name(self.config.dtype),
@@ -381,8 +456,18 @@ class Server(ThreadingHTTPServer):
             "dtype": self.config.dtype,
             "ready": self.ready,
         }
-
-
+    def design_info(self) -> Optional[dict]:
+        if not self.config.design_enabled:
+            return None
+        dtype = self.config.effective_design_dtype
+        return {
+            "model": reported_design_model_name(dtype),
+            "revision": self.design_revision,
+            "weightsSha256": self.design_weights_sha256,
+            "sampleRate": SAMPLE_RATE,
+            "dtype": dtype,
+            "ready": self.design_ready,
+        }
 class _Handler(BaseHTTPRequestHandler):
     server: Server
     server_version = SERVICE_NAME
@@ -422,7 +507,7 @@ class _Handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(supplied.encode("utf-8"), self.server.config.token.encode("utf-8")):
             raise HttpError(401, "unauthorized", "a valid access token is required")
 
-    def _read_json(self) -> dict:
+    def _read_json(self, max_bytes: int = MAX_BODY_BYTES) -> dict:
         if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             raise HttpError(415, "unsupported_media_type", "send application/json")
         if self.headers.get("Transfer-Encoding") is not None:
@@ -431,8 +516,9 @@ class _Handler(BaseHTTPRequestHandler):
         if raw_length is None or not raw_length.isascii() or not raw_length.isdigit():
             raise HttpError(411, "length_required", "send a Content-Length")
         length = int(raw_length)
-        if length > MAX_BODY_BYTES:
-            raise HttpError(413, "too_large", f"requests are limited to {MAX_BODY_BYTES // (1024 * 1024)} MB")
+        if length > max_bytes:
+            limit = f"{max_bytes // (1024 * 1024)} MB" if max_bytes >= 1024 * 1024 else f"{max_bytes // 1024} KB"
+            raise HttpError(413, "too_large", f"requests are limited to {limit}")
         try:
             body = json.loads(self.rfile.read(length).decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
@@ -443,14 +529,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _route(self, method: str) -> None:
         path = self.path.split("?", 1)[0]
-        routes = {"/health": "GET", "/tts": "POST"}
+        routes = {"/health": "GET", "/tts": "POST", "/voice-design": "POST"}
         if path not in routes:
             raise HttpError(404, "not_found", "no such endpoint")
         if routes[path] != method:
             raise HttpError(405, "method_not_allowed", f"use {routes[path]}")
         self._check_caller()
         if path == "/health":
-            return self._json(200, {"service": SERVICE_NAME, "apiVersion": API_VERSION, "tts": self.server.tts_info()})
+            return self._json(200, {"service": SERVICE_NAME, "apiVersion": API_VERSION, "tts": self.server.tts_info(), "voiceDesign": self.server.design_info()})
+        if path == "/voice-design":
+            return self._design(self._read_json(MAX_DESIGN_BODY_BYTES))
         self._tts(self._read_json())
 
     def _tts(self, body: dict) -> None:
@@ -487,20 +575,41 @@ class _Handler(BaseHTTPRequestHandler):
         ref = parse_reference(wav_bytes, ref_text)
         if not self.server.ready:
             raise HttpError(503, "not_ready", "the model is still loading" if not self.server.load_failed else "the model failed to load")
-        if not self.server.model_lock.acquire(timeout=self.server.config.queue_timeout_s):
+        self._render_locked(self.server.model_lock, lambda: self.server.renderer.render(text, language, seed, ref, ref_text), self.server.revision)  # type: ignore[union-attr]
+    def _design(self, body: dict) -> None:
+        if set(body) - {"instruct", "text", "language", "seed"}:  # the name is not echoed: it comes from the request
+            raise HttpError(400, "bad_request", "the request has a field this API does not define")
+        for field in ("instruct", "text"):
+            value = body.get(field)
+            if not isinstance(value, str) or not value.strip() or len(value) > MAX_DESIGN_CHARS:
+                raise HttpError(400, "bad_request", f"{field} must be 1 to {MAX_DESIGN_CHARS} characters")
+        language = body.get("language")
+        if not isinstance(language, str) or not language.strip() or len(language) > MAX_LANGUAGE_CHARS:
+            raise HttpError(400, "bad_request", "language must be a short, non-empty string")
+        seed = body.get("seed")
+        if not _is_int(seed) or not 0 <= seed <= MAX_SEED:
+            raise HttpError(400, "bad_request", "seed must be an integer from 0 to 2147483647")
+        server = self.server
+        if not server.config.design_enabled:
+            raise HttpError(503, "not_ready", "this server has no voice-design model")
+        if not server.design_ready:
+            raise HttpError(503, "not_ready", "the voice-design model is still loading" if not server.design_load_failed else "the voice-design model failed to load")
+        instruct, text = body["instruct"], body["text"]
+        self._render_locked(server.design_lock, lambda: server.design_renderer.render(instruct, text, language, seed), server.design_revision)  # type: ignore[union-attr]
+    def _render_locked(self, lock: threading.Lock, render: Callable[[], bytes], revision: str) -> None:
+        if not lock.acquire(timeout=self.server.config.queue_timeout_s):
             raise HttpError(503, "busy", "the model is busy; try again")
         started = time.monotonic()
         try:
-            wav = self.server.renderer.render(text, language, seed, ref, ref_text)  # type: ignore[union-attr]
+            wav = render()
         except OutOfMemory:
             raise HttpError(503, "busy", "the GPU is out of memory; try again") from None
         except RenderFailed as err:
             log.error("render failed: %s", err)
             raise HttpError(502, "model_failed", "the model could not render this line") from None
         finally:
-            self.server.model_lock.release()
-        self._send(200, wav, "audio/wav", {"X-Model-Revision": self.server.revision, "X-Render-Ms": str(round((time.monotonic() - started) * 1000))})
-
+            lock.release()
+        self._send(200, wav, "audio/wav", {"X-Model-Revision": revision, "X-Render-Ms": str(round((time.monotonic() - started) * 1000))})
     def _handle(self, method: str) -> None:
         try:
             self._route(method)
@@ -537,7 +646,17 @@ BENCH_LINES = [
 ]
 
 
-def run_bench(config: Config, reference_path: str, reference_text: str, out_dir: str, load_model: Callable[[Config], LoadedModel] = load_real_model) -> float:
+def run_bench(
+    config: Config,
+    reference_path: str,
+    reference_text: str,
+    out_dir: str,
+    load_model: Callable[[Config], LoadedModel] = load_real_model,
+    design: Optional[str] = None,
+    load_design_model: Callable[[Config], LoadedModel] = load_real_design_model,
+) -> float:
+    if design is not None and not config.design_enabled:
+        raise ConfigError("--design needs a voice-design model; do not pass --design-device none")
     ref = parse_reference(Path(reference_path).read_bytes(), reference_text)
     loaded = load_model(config)
     renderer = Renderer(loaded.adapter)
@@ -556,6 +675,13 @@ def run_bench(config: Config, reference_path: str, reference_text: str, out_dir:
                 per_char.append(ms / len(text))
                 (out / f"bench-{name}.wav").write_bytes(wav)
     median = statistics.median(per_char)
+    if design is not None:
+        designer = DesignRenderer(load_design_model(config).adapter)
+        started = time.monotonic()
+        wav = designer.render(design, BENCH_DESIGN_TEXT, "English", 0)
+        ms = (time.monotonic() - started) * 1000
+        (out / "bench-design.wav").write_bytes(wav)
+        print(f"voice design: {ms:.0f} ms for {wav_seconds(wav):.1f} s of audio (includes any warm-up); saved bench-design.wav")
     gpu = "unknown GPU"
     try:
         import torch
@@ -579,6 +705,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--attn", choices=ATTNS, default="sdpa")
         p.add_argument("--device", default="cuda:0")
         p.add_argument("--model-dir", default=None)
+        p.add_argument("--design-device", default=None, help="device for the VoiceDesign model (default: cuda:1 if two GPUs, else --device); 'none' turns voice design off")
+        p.add_argument("--design-dtype", choices=DTYPES, default=None, help="default: --dtype")
+        p.add_argument("--design-model-dir", default=None, help="local VoiceDesign snapshot (default: download the pinned revision)")
 
     serve = sub.add_parser("serve", help="run the HTTP service on 127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
@@ -587,17 +716,20 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--reference", required=True, help="reference WAV (PCM 16-bit mono, at most 30 s)")
     bench.add_argument("--reference-text", required=True, help="the words spoken in the reference clip")
     bench.add_argument("--out", default="./bench")
+    bench.add_argument("--design", default=None, metavar="INSTRUCT", help="also time one voice design from this description and save it")
     common(bench)
     return parser
 
 
+def design_options(args: argparse.Namespace) -> dict:
+    return {"design_device": resolve_design_device(args.design_device, args.device), "design_dtype": args.design_dtype, "design_model_dir": args.design_model_dir}
 def main(argv: Optional[list] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     args = build_parser().parse_args(argv)
     token = os.environ.get(TOKEN_ENV)
     try:
         if args.command == "serve":
-            config = Config(validate_token(token), args.port, args.dtype, args.attn, args.device, args.model_dir)
+            config = Config(validate_token(token), args.port, args.dtype, args.attn, args.device, args.model_dir, **design_options(args))
             server = Server(config)
             server.start_loading()
             log.info("listening on http://127.0.0.1:%d (model loading in the background)", server.port)
@@ -606,8 +738,8 @@ def main(argv: Optional[list] = None) -> int:
             except KeyboardInterrupt:
                 pass
             return 0
-        config = Config(token or "", 0, args.dtype, args.attn, args.device, args.model_dir)
-        run_bench(config, args.reference, args.reference_text, args.out)
+        config = Config(token or "", 0, args.dtype, args.attn, args.device, args.model_dir, **design_options(args))
+        run_bench(config, args.reference, args.reference_text, args.out, design=args.design)
         return 0
     except ConfigError as err:
         print(f"error: {err}", file=sys.stderr)

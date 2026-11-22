@@ -57,25 +57,62 @@ class FakeAdapter:
         return self.samples, self.rate
 
 
+SECRET_INSTRUCT = "SECRET-VOICE-INSTRUCT-5520"
+SECRET_DESIGN_TEXT = "SECRET-DESIGN-TEXT-8841"
+
+
+class FakeDesignAdapter:
+    def __init__(self):
+        self.calls = []
+        self.fail = None
+        self.hold = None
+        self.entered = threading.Event()
+        self.samples = [0.25 * math.sin(i / 7) for i in range(4800)]
+        self.rate = 24000
+
+    def generate_design(self, instruct, text, language, seed):
+        self.entered.set()
+        if self.hold is not None:
+            self.hold.wait(5)
+        self.calls.append((instruct, text, language, seed))
+        if self.fail is not None:
+            raise self.fail
+        return self.samples, self.rate
+
+
 class Harness:
-    def __init__(self, adapter=None, load=True, queue_timeout_s=5.0, token=TOKEN):
+    def __init__(self, adapter=None, load=True, queue_timeout_s=5.0, token=TOKEN, design=True, design_device=None, design_load=True, design_dtype=None):
         self.adapter = adapter or FakeAdapter()
+        self.design_adapter = FakeDesignAdapter()
         self.release_load = threading.Event()
-        if not load:
-            self.release_load.clear()
+        self.release_design_load = threading.Event()
 
         def loader(config):
             self.release_load.wait(5)
             return q.LoadedModel(self.adapter, "rev123", "ab" * 32)
 
-        self.server = q.Server(q.Config(token, port=0, queue_timeout_s=queue_timeout_s), load_model=loader)
+        def design_loader(config):
+            self.release_design_load.wait(5)
+            return q.LoadedModel(self.design_adapter, "designrev9", "cd" * 32)
+
+        config = q.Config(token, port=0, queue_timeout_s=queue_timeout_s, design_device=design_device if design else "none", design_dtype=design_dtype)
+        self.server = q.Server(config, load_model=loader, load_design_model=design_loader)
         if load:
             self.release_load.set()
+        if design_load:
+            self.release_design_load.set()
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.server.start_loading()
         if load:
             assert self.server.loaded.wait(5)
+        if design and design_load:
+            assert self.server.design_loaded.wait(5)
+
+    def design(self, **overrides):
+        body = {"instruct": "A weary old sailor.", "text": "The tide is turning.", "language": "English", "seed": 11}
+        body.update(overrides)
+        return self.request("POST", "/voice-design", body)
 
     def request(self, method, path, body=None, headers=None, auth=True, raw=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.server.port, timeout=10)
@@ -133,6 +170,26 @@ class TestStartup(unittest.TestCase):
     def test_cli_defaults(self):
         args = q.build_parser().parse_args(["serve"])
         self.assertEqual((args.port, args.dtype, args.attn, args.device), (8765, "float32", "sdpa", "cuda:0"))
+        self.assertEqual((args.design_device, args.design_dtype, args.design_model_dir), (None, None, None))
+    def test_design_cli_options_and_defaults(self):
+        args = q.build_parser().parse_args(["serve", "--design-device", "none", "--design-dtype", "float16", "--design-model-dir", "/m"])
+        self.assertEqual((args.design_device, args.design_dtype, args.design_model_dir), ("none", "float16", "/m"))
+        self.assertEqual(q.build_parser().parse_args(["bench", "--reference", "a", "--reference-text", "b", "--design", "x"]).design, "x")
+        self.assertEqual(q.resolve_design_device("cuda:1", "cuda:0"), "cuda:1")
+        self.assertEqual(q.resolve_design_device("none", "cuda:0"), "none")
+        from unittest import mock
+        torch = mock.MagicMock()
+        for count, expected in ((2, "cuda:1"), (1, "cuda:0"), (0, "cuda:0")):
+            torch.cuda.device_count.return_value = count
+            with mock.patch.dict("sys.modules", {"torch": torch}):
+                self.assertEqual(q.resolve_design_device(None, "cuda:0"), expected)
+    def test_design_model_name_carries_dtype(self):
+        self.assertEqual(q.reported_design_model_name("bfloat16"), "Qwen3-TTS-12Hz-1.7B-VoiceDesign")
+        self.assertEqual(q.reported_design_model_name("float16"), "Qwen3-TTS-12Hz-1.7B-VoiceDesign (float16)")
+    def test_design_pins(self):
+        self.assertEqual(q.DESIGN_REVISION, "5ecdb67327fd37bb2e042aab12ff7391903235d3")
+        self.assertEqual(q.DESIGN_EXPECTED_WEIGHTS_SHA256, "391e8db219f292c515297cdceeb43e4eae67cdde35fa57e79a6a8a532fca0522")
+        self.assertEqual(q.DESIGN_REPO_ID, "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
 
     def test_model_name_carries_dtype(self):
         self.assertEqual(q.reported_model_name("bfloat16"), "Qwen3-TTS-12Hz-1.7B-Base")
@@ -147,7 +204,7 @@ class TestStartup(unittest.TestCase):
 
 class TestAuthAndHealth(TestBase):
     def test_every_endpoint_requires_token(self):
-        for method, path in (("GET", "/health"), ("POST", "/tts")):
+        for method, path in (("GET", "/health"), ("POST", "/tts"), ("POST", "/voice-design")):
             self.assertError(self.h.request(method, path, auth=False, body={} if method == "POST" else None), 401, "unauthorized")
             self.assertError(self.h.request(method, path, headers={"Authorization": "Bearer " + "x" * 24}, body={} if method == "POST" else None), 401, "unauthorized")
 
@@ -170,6 +227,10 @@ class TestAuthAndHealth(TestBase):
         tts = info["tts"]
         self.assertEqual(tts["model"], "Qwen3-TTS-12Hz-1.7B-Base (float32)")
         self.assertEqual((tts["revision"], tts["weightsSha256"], tts["sampleRate"], tts["dtype"], tts["ready"]), ("rev123", "ab" * 32, 24000, "float32", True))
+        self.assertEqual(
+            info["voiceDesign"],
+            {"model": "Qwen3-TTS-12Hz-1.7B-VoiceDesign (float32)", "revision": "designrev9", "weightsSha256": "cd" * 32, "sampleRate": 24000, "dtype": "float32", "ready": True},
+        )
 
     def test_health_and_tts_before_ready(self):
         h = Harness(load=False)
@@ -184,6 +245,201 @@ class TestAuthAndHealth(TestBase):
         self.assertEqual(h.tts()[0], 200)
 
 
+class TestDesignHealth(unittest.TestCase):
+    def test_design_disabled_reports_null_and_503(self):
+        h = Harness(design=False)
+        self.addCleanup(h.close)
+        self.assertIsNone(json.loads(h.request("GET", "/health")[2])["voiceDesign"])
+        status, _, payload = h.design()
+        self.assertEqual((status, json.loads(payload)["error"]["code"]), (503, "not_ready"))
+        self.assertEqual(h.tts()[0], 200)
+    def test_readiness_is_per_model(self):
+        h = Harness(design_load=False)
+        self.addCleanup(h.close)
+        info = json.loads(h.request("GET", "/health")[2])
+        self.assertEqual((info["tts"]["ready"], info["voiceDesign"]["ready"]), (True, False))
+        self.assertEqual(h.tts()[0], 200)
+        self.assertEqual((h.design()[0], json.loads(h.design()[2])["error"]["code"]), (503, "not_ready"))
+        h.release_design_load.set()
+        self.assertTrue(h.server.design_loaded.wait(5))
+        self.assertTrue(json.loads(h.request("GET", "/health")[2])["voiceDesign"]["ready"])
+        self.assertEqual(h.design()[0], 200)
+    def test_tts_not_ready_while_design_is_ready(self):
+        h = Harness(load=False)
+        self.addCleanup(h.close)
+        info = json.loads(h.request("GET", "/health")[2])
+        self.assertEqual((info["tts"]["ready"], info["voiceDesign"]["ready"]), (False, True))
+        self.assertEqual(h.design()[0], 200)
+        self.assertEqual(json.loads(h.tts()[2])["error"]["code"], "not_ready")
+        h.release_load.set()
+    def test_design_dtype_defaults_to_dtype_and_can_differ(self):
+        h = Harness(design_dtype="float16")
+        self.addCleanup(h.close)
+        info = json.loads(h.request("GET", "/health")[2])
+        self.assertEqual(info["voiceDesign"]["model"], "Qwen3-TTS-12Hz-1.7B-VoiceDesign (float16)")
+        self.assertEqual(info["tts"]["dtype"], "float32")
+    def test_a_failed_design_load_stays_not_ready(self):
+        def broken(config):
+            raise RuntimeError("no weights")
+        server = q.Server(q.Config(TOKEN, port=0), load_model=lambda c: q.LoadedModel(FakeAdapter(), "r", "ab" * 32), load_design_model=broken)
+        self.addCleanup(server.server_close)
+        with self.assertLogs("qwen_tts_server", level="ERROR"):
+            server.start_loading()
+            for _ in range(100):
+                if server.design_load_failed:
+                    break
+                threading.Event().wait(0.05)
+        self.assertTrue(server.design_load_failed)
+        self.assertFalse(server.design_info()["ready"])
+class TestVoiceDesign(TestBase):
+    def test_success_wav_headers_and_seed_passthrough(self):
+        status, headers, payload = self.h.design(seed=12345, language="French", instruct="A bright nurse.", text="Bonjour.")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "audio/wav")
+        self.assertEqual(headers["X-Model-Revision"], "designrev9")
+        self.assertTrue(headers["X-Render-Ms"].isdigit())
+        with wave.open(io.BytesIO(payload), "rb") as w:
+            self.assertEqual((w.getframerate(), w.getnchannels(), w.getsampwidth(), w.getnframes()), (24000, 1, 2, 4800))
+        self.assertEqual(self.h.design_adapter.calls[-1], ("A bright nurse.", "Bonjour.", "French", 12345))
+        self.assertEqual(self.h.adapter.generate_calls, [])
+    def test_field_refusals(self):
+        cases = {
+            "unknown field": {"extra": 1},
+            "blank instruct": {"instruct": "  "},
+            "instruct too long": {"instruct": "x" * 501},
+            "instruct not a string": {"instruct": 4},
+            "blank text": {"text": " "},
+            "text too long": {"text": "x" * 501},
+            "text not a string": {"text": None},
+            "blank language": {"language": " "},
+            "language too long": {"language": "x" * 41},
+            "language not a string": {"language": 3},
+            "negative seed": {"seed": -1},
+            "seed too big": {"seed": 2**31},
+            "bool seed": {"seed": True},
+            "float seed": {"seed": 1.5},
+            "null seed": {"seed": None},
+        }
+        for name, overrides in cases.items():
+            with self.subTest(name):
+                self.assertError(self.h.design(**overrides), 400, "bad_request")
+        for key in ("instruct", "text", "language", "seed"):
+            with self.subTest(missing=key):
+                body = {"instruct": "a", "text": "b", "language": "English", "seed": 1}
+                del body[key]
+                self.assertError(self.h.request("POST", "/voice-design", body), 400, "bad_request")
+        self.assertEqual(self.h.design(instruct="x" * 500, text="y" * 500, language="z" * 40, seed=0)[0], 200)
+        self.assertEqual(self.h.design(seed=2**31 - 1)[0], 200)
+    def test_body_shape_errors(self):
+        json_type = {"Content-Type": "application/json"}
+        self.assertError(self.h.request("POST", "/voice-design", raw=b"{nope", headers=json_type), 400, "bad_request")
+        self.assertError(self.h.request("POST", "/voice-design", raw=b"[1]", headers=json_type), 400, "bad_request")
+        self.assertError(self.h.request("POST", "/voice-design", raw=b"{}", headers={"Content-Type": "text/plain"}), 415, "unsupported_media_type")
+    def test_too_large_over_64_kb_is_refused_without_reading(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.h.server.port, timeout=5)
+        conn.putrequest("POST", "/voice-design")
+        conn.putheader("Authorization", f"Bearer {TOKEN}")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(64 * 1024 + 1))
+        conn.endheaders()
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 413)
+        self.assertEqual(json.loads(resp.read())["error"]["code"], "too_large")
+        conn.close()
+        # 64 KB is a limit for this route only; /tts still takes up to 4 MB.
+        self.assertEqual(self.h.tts(text="x" * 10)[0], 200)
+    def test_chunked_and_missing_length_refused(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.h.server.port, timeout=5)
+        conn.request("POST", "/voice-design", body=iter([b"{}"]), headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json", "Transfer-Encoding": "chunked"}, encode_chunked=True)
+        self.assertEqual(conn.getresponse().status, 411)
+        conn.close()
+        conn = http.client.HTTPConnection("127.0.0.1", self.h.server.port, timeout=5)
+        conn.putrequest("POST", "/voice-design")
+        conn.putheader("Authorization", f"Bearer {TOKEN}")
+        conn.putheader("Content-Type", "application/json")
+        conn.endheaders()
+        self.assertEqual(conn.getresponse().status, 411)
+        conn.close()
+    def test_token_origin_and_method(self):
+        self.assertError(self.h.request("POST", "/voice-design", {"instruct": "a"}, auth=False), 401, "unauthorized")
+        self.assertError(self.h.request("POST", "/voice-design", {}, headers={"Origin": "https://evil.example"}), 403, "bad_origin")
+        self.assertError(self.h.request("GET", "/voice-design"), 405, "method_not_allowed")
+    def test_model_exception_is_502_without_leak(self):
+        self.h.design_adapter.fail = RuntimeError(f"boom {SECRET_INSTRUCT} {SECRET_DESIGN_TEXT}")
+        with self.assertLogs("qwen_tts_server", level="DEBUG") as logs:
+            result = self.h.design(instruct=SECRET_INSTRUCT, text=SECRET_DESIGN_TEXT)
+        self.assertError(result, 502, "model_failed")
+        joined = "\n".join(logs.output) + result[2].decode()
+        for secret in (SECRET_INSTRUCT, SECRET_DESIGN_TEXT, "boom"):
+            self.assertNotIn(secret, joined)
+    def test_out_of_memory_is_503_busy(self):
+        self.h.design_adapter.fail = q.OutOfMemory()
+        self.assertError(self.h.design(), 503, "busy")
+    def test_bad_model_output_is_502(self):
+        for samples, rate in (([], 24000), ([0.0] * 100, 24000), ([float("nan")] * 10, 24000), ([0.3] * 100, 16000)):
+            with self.subTest(len=len(samples), rate=rate):
+                self.h.design_adapter.samples, self.h.design_adapter.rate = samples, rate
+                self.assertError(self.h.design(), 502, "model_failed")
+    def test_logs_and_errors_hold_no_instruct_or_text(self):
+        with self.assertLogs("qwen_tts_server", level="DEBUG") as logs:
+            ok = self.h.design(instruct=SECRET_INSTRUCT, text=SECRET_DESIGN_TEXT)
+            bad = [self.h.design(instruct=SECRET_INSTRUCT, text=SECRET_DESIGN_TEXT, seed=-1), self.h.design(instruct=SECRET_INSTRUCT, text=SECRET_DESIGN_TEXT, **{SECRET_INSTRUCT: 1}), self.h.design(instruct=SECRET_INSTRUCT, text="x" * 501)]
+        self.assertEqual(ok[0], 200)
+        joined = "\n".join(logs.output) + "".join(b[2].decode() for b in bad)
+        for secret in (SECRET_INSTRUCT, SECRET_DESIGN_TEXT):
+            self.assertNotIn(secret, joined)
+        self.assertIn("POST /voice-design -> 200", joined)
+class TestLocks(unittest.TestCase):
+    def test_different_devices_use_separate_locks_and_run_together(self):
+        h = Harness(design_device="cuda:1", queue_timeout_s=0.3)
+        self.addCleanup(h.close)
+        self.assertIsNot(h.server.design_lock, h.server.model_lock)
+        h.design_adapter.hold = threading.Event()
+        first = []
+        t = threading.Thread(target=lambda: first.append(h.design()[0]))
+        t.start()
+        self.assertTrue(h.design_adapter.entered.wait(5))
+        self.assertEqual(h.tts()[0], 200)  # the clone finishes while the design is still blocked
+        h.design_adapter.hold.set()
+        t.join(5)
+        self.assertEqual(first, [200])
+    def test_same_device_shares_one_lock(self):
+        h = Harness(queue_timeout_s=0.2)
+        self.addCleanup(h.close)
+        self.assertIs(h.server.design_lock, h.server.model_lock)
+        h.design_adapter.hold = threading.Event()
+        first = []
+        t = threading.Thread(target=lambda: first.append(h.design()[0]))
+        t.start()
+        self.assertTrue(h.design_adapter.entered.wait(5))
+        status, _, payload = h.tts()
+        self.assertEqual((status, json.loads(payload)["error"]["code"]), (503, "busy"))
+        h.design_adapter.hold.set()
+        t.join(5)
+        self.assertEqual(first, [200])
+    def test_explicit_same_device_also_shares(self):
+        h = Harness(design_device="cuda:0")
+        self.addCleanup(h.close)
+        self.assertIs(h.server.design_lock, h.server.model_lock)
+class TestBench(unittest.TestCase):
+    def test_bench_design_saves_a_wav(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            ref = Path(tmp) / "ref.wav"
+            ref.write_bytes(make_wav())
+            adapter, design_adapter = FakeAdapter(), FakeDesignAdapter()
+            config = q.Config("t" * 24, port=0)
+            with mock.patch("builtins.print"):
+                q.run_bench(config, str(ref), "Good evening.", tmp, load_model=lambda c: q.LoadedModel(adapter, "r", "s"), design="A weary sailor.", load_design_model=lambda c: q.LoadedModel(design_adapter, "d", "s"))
+            self.assertTrue((Path(tmp) / "bench-design.wav").is_file())
+            self.assertEqual(design_adapter.calls[0][0], "A weary sailor.")
+            self.assertFalse(any(c[0] == "A weary sailor." for c in adapter.generate_calls))
+    def test_bench_design_needs_a_design_model(self):
+        config = q.Config("t" * 24, port=0, design_device="none")
+        with self.assertRaises(q.ConfigError):
+            q.run_bench(config, "x.wav", "t", "/tmp/unused", design="A voice.")
 class TestTts(TestBase):
     def test_success_wav_and_headers(self):
         status, headers, payload = self.h.tts()

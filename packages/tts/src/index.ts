@@ -6,3 +6,4 @@ export * from "./render-cache.js";
 export * from "./segments.js";
 export * from "./stub.js";
 export * from "./wav.js";
+export * from "./voice-designer.js";
