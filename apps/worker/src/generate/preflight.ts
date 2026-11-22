@@ -13,6 +13,8 @@ import { QwenTtsProvider, loadQwenConfig, type QwenTtsOptions, type TtsProvider 
 
 export interface PreflightPaths {
   voiceCatalogue: string;
+  /** The folder the catalogue's clip paths are relative to. */
+  voiceClips: string;
   sfxIndex: string;
   styleGuide: string;
 }
@@ -102,9 +104,9 @@ export async function preflight(env: Record<string, string | undefined>, paths: 
   if (voices) {
     try {
       const q = loadQwenConfig(env);
-      tts = await (hooks.connectTts ?? QwenTtsProvider.connect.bind(QwenTtsProvider))({ baseUrl: q.baseUrl, token: q.token, catalogue: voices, seed: q.seed, timeoutMs: q.timeoutMs, msPerChar: q.msPerChar });
+      tts = await (hooks.connectTts ?? QwenTtsProvider.connect.bind(QwenTtsProvider))({ baseUrl: q.baseUrl, token: q.token, catalogue: voices, clipDir: paths.voiceClips, seed: q.seed, timeoutMs: q.timeoutMs, msPerChar: q.msPerChar });
     } catch (err) {
-      problems.push(`Qwen3-TTS is not ready: ${messageOf(err)}. Start services/local-audio with the qwen-mlx backend (see its README) and check LOCAL_AUDIO_URL`);
+      problems.push(`Qwen3-TTS is not ready: ${messageOf(err)}. Start the speech server (services/local-audio, or the Kaggle server in services/local-audio/kaggle) and check LOCAL_AUDIO_URL and LOCAL_AUDIO_TOKEN`);
     }
   }
 

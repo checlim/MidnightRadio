@@ -52,7 +52,7 @@ packages/
   tts/              TtsProvider interface, strict WAV validation, an offline StubProvider, the atomic render cache, per-line retries and the QwenTtsProvider client for the local audio service
   mix/              ffmpeg wrapper (built); ducking and loudness (planned)
 services/
-  local-audio/      Local Python host for Qwen3-TTS (built, Apple Silicon) and the reference server for the sound-effect API, used only on the generation machine
+  local-audio/      Speech servers (docs/tts-service-api.md): the local Qwen3-TTS host (Apple Silicon) with the sound-effect reference server, and kaggle/ (Qwen3-TTS on a cloud GPU behind an https tunnel); never deployed
 mcp/
   sfx-library/      MCP server (stdio) over the sound library: search, details, music cues, Script sound audit
 fixtures/
@@ -95,7 +95,7 @@ Copy `.env.example` to `.env`. Secrets are read only from environment variables 
 | `WORKER_SHUTDOWN_TIMEOUT_MS` | How long the worker waits on SIGTERM to release its current job before exiting (default 4,000, below Fly.io's 5 s and Docker's 10 s kill timeouts). |
 | `LLM_API_KEY`, `LLM_MODEL` | Credentials and model for casting and adaptation. Any OpenAI-compatible Chat Completions endpoint with JSON-schema output works. Without a key, no paid LLM call is possible. |
 | `LLM_BASE_URL`, `LLM_TIMEOUT_MS` | Endpoint (default `https://api.openai.com/v1`) and per-request timeout (default 90,000 ms). |
-| `LOCAL_AUDIO_URL`, `LOCAL_AUDIO_TOKEN` | Where the local audio service listens (loopback addresses only; default `http://127.0.0.1:8765`) and its optional access token. |
+| `LOCAL_AUDIO_URL`, `LOCAL_AUDIO_TOKEN` | The speech server (default `http://127.0.0.1:8765`): plain http only on loopback, otherwise https with a token of at least 16 characters, e.g. the Kaggle server's tunnel (`services/local-audio/kaggle/README.md`). |
 | `LOCAL_AUDIO_TIMEOUT_MS`, `LOCAL_AUDIO_MS_PER_CHAR`, `TTS_SEED` | Per-render timeout (default 10 minutes), the assumed render time per character for the pre-render estimate (default 118 ms, measured on an Apple M2 with the 1.7B model; set your own machine's value), and the seed sent with every render. |
 | `GLOBAL_DAILY_TTS_CHAR_LIMIT` | TTS characters allowed per UTC day. TTS runs locally, so this limits render time rather than spend. Missing or `0` disables TTS. |
 | `GLOBAL_DAILY_LLM_TOKEN_LIMIT` | LLM tokens (input plus capped output) allowed per UTC day. Missing or `0` disables paid LLM calls. |

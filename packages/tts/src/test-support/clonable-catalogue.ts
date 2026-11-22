@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { STUB_VOICE_CATALOGUE, requireClonable, type ClonableCatalogue, type VoiceCatalogue } from "@midnight-radio/core";
 import { encodeWav } from "../wav.js";
 
@@ -21,4 +23,13 @@ export function clonableStubCatalogue(patch: Partial<VoiceCatalogue> = {}): Clon
       clip: { file: `clips/${v.id}.wav`, sha256: createHash("sha256").update(clipBytes(v.id)).digest("hex"), transcript: CLIP_TRANSCRIPT },
     })),
   });
+}
+
+/** Write every voice's reference clip under `dir`, where the catalogue's clip paths point. */
+export async function writeClips(dir: string, catalogue: ClonableCatalogue): Promise<void> {
+  for (const v of catalogue.voices) {
+    const path = join(dir, v.clip.file);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, clipBytes(v.id));
+  }
 }

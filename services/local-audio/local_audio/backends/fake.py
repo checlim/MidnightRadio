@@ -33,8 +33,8 @@ class FakeBackend(Backend):
             time.sleep(self._delay)
         words = max(1, len(request.text.split()))
         frames = words * MS_PER_WORD * TTS_RATE // 1000
-        # Pitch depends on the voice and the clip, so a different voice or clip sounds different.
-        freq = 110 + zlib.crc32((request.voice_id + request.clip.sha256).encode()) % 220
+        # Pitch depends on the reference clip and its text, so a different reference sounds different.
+        freq = 110 + zlib.crc32(request.reference_wav + request.reference_text.encode("utf-8")) % 220
         fade = TTS_RATE // 100
         samples = [
             round(math.sin(2 * math.pi * freq * i / TTS_RATE) * 13_000 * max(0.0, min(1.0, i / fade, (frames - 1 - i) / fade)))

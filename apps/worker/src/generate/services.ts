@@ -44,7 +44,7 @@ export function createGenerationServices(env: Record<string, string | undefined>
   let connecting: Promise<TtsProvider> | null = null;
   const tts = () => {
     // One connection for the worker's life; a failed attempt is forgotten so the next job retries.
-    connecting ??= QwenTtsProvider.connect({ baseUrl: qwen.baseUrl, token: qwen.token, catalogue: voices, seed: qwen.seed, timeoutMs: qwen.timeoutMs, msPerChar: qwen.msPerChar }).catch((err: unknown) => {
+    connecting ??= QwenTtsProvider.connect({ baseUrl: qwen.baseUrl, token: qwen.token, catalogue: voices, clipDir: join(root, "assets/voices"), seed: qwen.seed, timeoutMs: qwen.timeoutMs, msPerChar: qwen.msPerChar }).catch((err: unknown) => {
       connecting = null;
       throw new Error(`Qwen3-TTS is not ready: ${err instanceof Error ? err.message : String(err)}`);
     });

@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { transcriptHash, type ClonableCatalogue } from "@midnight-radio/core";
+import type { ClonableCatalogue } from "@midnight-radio/core";
 import { StubProvider } from "../stub.js";
+import { clipBytes } from "./clonable-catalogue.js";
 
 export interface Recorded {
   method: string;
@@ -10,17 +12,21 @@ export interface Recorded {
   body: unknown;
 }
 
+export interface TtsBody {
+  text: string;
+  language: string;
+  seed: number;
+  reference: { audio: string; text: string };
+}
+
 export interface FakeState {
   revision: string;
   model: string;
   apiVersion: number;
-  service: string;
   tts: { sampleRate: number; ready: boolean; weightsSha256?: string } | null;
-  /** Overrides what /health reports for voices. */
-  voices?: Record<string, { clipSha256: string; transcriptSha256: string }>;
   token?: string;
   /** Takes over /tts. Return true if the response was handled. */
-  tts_handler?: (req: IncomingMessage, res: ServerResponse, body: { voiceId: string; text: string; delivery?: string; seed?: number }) => boolean | Promise<boolean>;
+  tts_handler?: (req: IncomingMessage, res: ServerResponse, body: TtsBody) => boolean | Promise<boolean>;
   healthStatus?: number;
   healthBody?: string;
 }
@@ -40,11 +46,16 @@ const readBody = (req: IncomingMessage): Promise<string> =>
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
   });
 
-/** An in-process stand-in for services/local-audio that speaks the same HTTP contract. */
+/**
+ * An in-process speech server that speaks the generic API (docs/tts-service-api.md). It knows no
+ * voices: it renders the stub tone of whichever catalogue voice's clip it was sent, so a test can
+ * see that the right clip travelled with each line.
+ */
 export async function startFakeService(catalogue: ClonableCatalogue, initial: Partial<FakeState> = {}): Promise<FakeService> {
-  const state: FakeState = { revision: "fake-1", model: "fake-tts", apiVersion: 1, service: "midnight-radio-local-audio", tts: { sampleRate: 24_000, ready: true }, ...initial };
+  const state: FakeState = { revision: "fake-1", model: "fake-tts", apiVersion: 1, tts: { sampleRate: 24_000, ready: true }, ...initial };
   const requests: Recorded[] = [];
   const stub = new StubProvider();
+  const voiceByClip = new Map(catalogue.voices.map((v) => [createHash("sha256").update(clipBytes(v.id)).digest("hex"), v.id]));
 
   const server: Server = createServer(async (req, res) => {
     const raw = await readBody(req);
@@ -62,25 +73,18 @@ export async function startFakeService(catalogue: ClonableCatalogue, initial: Pa
     }
     if (req.url === "/health") {
       res.writeHead(state.healthStatus ?? 200, { "content-type": "application/json" });
-      res.end(
-        state.healthBody ??
-          JSON.stringify({
-            service: state.service,
-            apiVersion: state.apiVersion,
-            backend: "fake",
-            tts: state.tts && { model: state.model, revision: state.revision, ...state.tts },
-            sfx: null,
-            voices:
-              state.voices ??
-              Object.fromEntries(catalogue.voices.map((v) => [v.id, { clipSha256: v.clip.sha256, transcriptSha256: transcriptHash(v.clip.transcript) }])),
-          }),
-      );
+      res.end(state.healthBody ?? JSON.stringify({ apiVersion: state.apiVersion, tts: state.tts && { model: state.model, revision: state.revision, ...state.tts } }));
       return;
     }
     if (req.url === "/tts" && req.method === "POST") {
-      const b = body as { voiceId: string; text: string; delivery?: string; seed?: number };
+      const b = body as TtsBody;
       if (state.tts_handler && (await state.tts_handler(req, res, b))) return;
-      const wav = await stub.synthesize({ voiceId: b.voiceId, text: b.text, ...(b.delivery ? { delivery: b.delivery as never } : {}) });
+      const voiceId = voiceByClip.get(createHash("sha256").update(Buffer.from(b.reference?.audio ?? "", "base64")).digest("hex"));
+      if (!voiceId) {
+        res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "bad_request", message: "the reference is not a usable WAV" } }));
+        return;
+      }
+      const wav = await stub.synthesize({ voiceId, text: b.text });
       res.writeHead(200, { "content-type": "audio/wav", "content-length": String(wav.length), "x-model-revision": state.revision }).end(wav);
       return;
     }

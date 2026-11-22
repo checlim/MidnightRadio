@@ -6,6 +6,7 @@ Runs only where the model and mlx-audio are available:
 Everywhere else (and in CI) it is skipped. The parts that need no model always run.
 """
 
+import base64
 import importlib.util
 import json
 import os
@@ -15,7 +16,7 @@ from pathlib import Path
 
 from local_audio.backends import BackendUnavailable, create_backend
 from local_audio.backends.qwen_mlx import describe_snapshot, file_sha256
-from tests.helpers import serving, wav_info, write_catalogue
+from tests.helpers import serving, wav_info
 
 BASE = os.environ.get("MR_QWEN_BASE")
 DESIGN = os.environ.get("MR_QWEN_DESIGN")
@@ -74,34 +75,24 @@ class WithTheRealModel(unittest.TestCase):
         self.assertIsNone(self.backend.sfx_info())
 
     def test_clones_a_voice_over_http_repeatably_and_distinctly(self):
-        def use_spike_clips(entries):
-            import hashlib
-
-            for e in entries:
-                clip = (SPIKE / f"ref-{e['id']}.wav").read_bytes()
-                self._dir_clips[e["id"]] = clip
-                e["clip"].update(sha256=hashlib.sha256(clip).hexdigest(), transcript=REF_TEXT)
-
-        self._dir_clips = {}
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            catalogue = write_catalogue(base, voices=("nobleman", "young-man"), mutate=use_spike_clips)
-            for vid, clip in self._dir_clips.items():
-                (base / "clips" / f"{vid}.wav").write_bytes(clip)
-            with serving(backend=self.backend, catalogue_path=catalogue) as s:
-                status, health = s.json("GET", "/health")
-                self.assertEqual((status, health["backend"], health["tts"]["weightsSha256"]), (200, "qwen-mlx", self.backend.tts_info()["weightsSha256"]))
-                line = {"voiceId": "nobleman", "text": "Welcome to my house.", "seed": 7}
-                status, headers, first = s.request("POST", "/tts", line)
-                self.assertEqual(status, 200)
-                self.assertEqual(headers["x-model-revision"], self.backend.tts_info()["revision"])
-                info = wav_info(first)
-                self.assertEqual((info["rate"], info["channels"], info["width"]), (24_000, 1, 2))
-                self.assertGreater(info["frames"], 24_000 // 2)  # at least half a second of speech
-                self.assertEqual(s.request("POST", "/tts", line)[2], first)  # same seed, same audio
-                self.assertNotEqual(s.request("POST", "/tts", {**line, "seed": 8})[2], first)
-                self.assertNotEqual(s.request("POST", "/tts", {**line, "voiceId": "young-man"})[2], first)
-                self.assertEqual(s.request("POST", "/tts", {**line, "delivery": "whisper"})[0], 200)  # accepted, not yet used
+        def body(voice: str, **overrides) -> dict:
+            audio = base64.b64encode((SPIKE / f"ref-{voice}.wav").read_bytes()).decode("ascii")
+            return {"text": "Welcome to my house.", "language": "English", "seed": 7, "reference": {"audio": audio, "text": REF_TEXT}, **overrides}
+        with serving(backend=self.backend) as s:
+            status, health = s.json("GET", "/health")
+            self.assertEqual((status, health["backend"], health["tts"]["weightsSha256"]), (200, "qwen-mlx", self.backend.tts_info()["weightsSha256"]))
+            self.assertNotIn("voices", health)
+            status, headers, first = s.request("POST", "/tts", body("nobleman"))
+            self.assertEqual(status, 200)
+            self.assertEqual(headers["x-model-revision"], self.backend.tts_info()["revision"])
+            info = wav_info(first)
+            self.assertEqual((info["rate"], info["channels"], info["width"]), (24_000, 1, 2))
+            self.assertGreater(info["frames"], 24_000 // 2)  # at least half a second of speech
+            self.assertEqual(s.request("POST", "/tts", body("nobleman"))[2], first)  # same seed, same audio
+            self.assertNotEqual(s.request("POST", "/tts", body("nobleman", seed=8))[2], first)
+            self.assertNotEqual(s.request("POST", "/tts", body("young-man"))[2], first)
+            status, payload = s.json("POST", "/tts", body("nobleman", language="Klingon"))
+            self.assertEqual((status, payload["error"]["code"]), (400, "bad_request"))
 
     def test_refuses_sound_effects(self):
         from local_audio.backends import SfxRequest

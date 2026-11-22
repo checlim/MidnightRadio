@@ -30,12 +30,13 @@ const designs = readJson("voices.json") as {
  * Pin of the committed catalogue. A Cast stores this hash, so changing any voice, clip or model
  * pin must be deliberate: re-assemble, then update this value in the same commit.
  */
-const PINNED_HASH = "37522d9f0045a3bb2de6b504f70e19339ebecc6a32b3c4890d6d854fcd121a90";
+const PINNED_HASH = "9bfef49717c83b9d6c82e855ebecd0ee793c1f0f2f359ae611010f3de33b3198";
 describe("committed voice catalogue", () => {
   it("is clonable and pins both Qwen3-TTS models by revision and weights hash", () => {
-    expect(catalogue).toMatchObject({ provider: "qwen3-tts", model: "Qwen3-TTS-12Hz-1.7B-Base-bf16" });
+    // Speech: the official PyTorch build at float32 on a CUDA GPU (docs/tts-service-api.md). The clips were designed with the MLX VoiceDesign build.
+    expect(catalogue).toMatchObject({ provider: "qwen3-tts", model: "Qwen3-TTS-12Hz-1.7B-Base (float32)", version: "2" });
     const roles = Object.fromEntries((catalogue.models ?? []).map((m) => [m.role, m]));
-    expect(roles["voice-clone"]).toMatchObject({ name: catalogue.model, revision: "a6eb4f68e4b056f1215157bb696209bc82a6db48", weightsSha256: "81fb76175ff74e69be25fef2cc3e54f016df3034f1514c8e1c89da06a3510cff" });
+    expect(roles["voice-clone"]).toMatchObject({ name: catalogue.model, revision: "fd4b254389122332181a7c3db7f27e918eec64e3", weightsSha256: "38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c" });
     expect(roles["voice-design"]).toMatchObject({ name: "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16", revision: "7d3824abff87e49756bb0f83fb5411de75d160c4", weightsSha256: "96ae28bec2205ec0b5e0c750bea2b8a5deac4f14d33a8a25a5f753299486b70e" });
   });
   it("has the reserved Announcer and Narrator plus at least 32 character voices", () => {

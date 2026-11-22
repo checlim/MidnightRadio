@@ -1,4 +1,4 @@
-"""python -m local_audio --catalogue <catalogue.json> --backend <name>
+"""python -m local_audio --backend <name>
 
 Prints one JSON line when it is ready, `{"listening": "http://127.0.0.1:PORT"}`, then serves until
 it receives SIGTERM or SIGINT.
@@ -13,7 +13,6 @@ import threading
 import time
 
 from .backends import BackendUnavailable, create_backend
-from .catalogue import CatalogueError, load_catalogue
 from .config import ConfigError, parse_config
 from .server import LocalAudioServer
 
@@ -22,13 +21,12 @@ def main(argv: list[str]) -> int:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(message)s")
     try:
         config = parse_config(argv, os.environ)
-        clips = load_catalogue(config.catalogue_path)
         backend = create_backend(config.backend, config.fake_delay_ms, config.tts_model)
-    except (ConfigError, CatalogueError, BackendUnavailable) as err:
+    except (ConfigError, BackendUnavailable) as err:
         print(f"local_audio: {err}", file=sys.stderr)
         return 2
 
-    server = LocalAudioServer(config, backend, clips)
+    server = LocalAudioServer(config, backend)
     stopping = False
 
     # A signal handler runs on the main thread, between bytecodes, possibly while that thread is

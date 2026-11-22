@@ -1,8 +1,8 @@
 {
   "id": "midnight-radio-qwen3-voices",
   "provider": "qwen3-tts",
-  "model": "Qwen3-TTS-12Hz-1.7B-Base-bf16",
-  "version": "1",
+  "model": "Qwen3-TTS-12Hz-1.7B-Base (float32)",
+  "version": "2",
   "seed": "midnight-radio-voices-1",
   "reserved": {
     "announcer": "announcer",
@@ -17,9 +17,9 @@
     },
     {
       "role": "voice-clone",
-      "name": "Qwen3-TTS-12Hz-1.7B-Base-bf16",
-      "revision": "a6eb4f68e4b056f1215157bb696209bc82a6db48",
-      "weightsSha256": "81fb76175ff74e69be25fef2cc3e54f016df3034f1514c8e1c89da06a3510cff"
+      "name": "Qwen3-TTS-12Hz-1.7B-Base (float32)",
+      "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
+      "weightsSha256": "38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c"
     }
   ],
   "voices": [

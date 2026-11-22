@@ -1,33 +1,38 @@
-"""HTTP API: GET /health, POST /tts, POST /sfx.
+"""HTTP API: GET /health, POST /tts, POST /sfx. /tts implements docs/tts-service-api.md.
 
 Hardening, because this is a model server on a developer's machine:
 - bound to loopback by `config.py`; the Host header must name the loopback address and our port,
   which blocks DNS-rebinding pages; any request that carries an Origin header (a browser page) is refused;
-- JSON requests only, with a small body limit and strict field checks;
+- JSON requests only, with a body limit (4 MB for /tts, whose reference clip is inside; 64 KB for /sfx) and strict field checks;
 - an optional bearer token, compared in constant time and never logged or echoed;
 - one model call at a time, because one local model cannot serve two at once;
 - logs hold the method, the path and the status only: never bodies, headers or tokens.
 """
 
+import base64
+import binascii
 import hmac
+import io
 import json
 import logging
-import re
 import threading
 import time
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 
 from . import API_VERSION, SERVICE_NAME
 from .backends import Backend, BackendError, SfxRequest, TtsRequest
-from .catalogue import VoiceClip
 from .config import Config
 
 log = logging.getLogger("local_audio")
 
 MAX_BODY_BYTES = 64 * 1024
-DELIVERIES = frozenset({"neutral", "whisper", "urgent", "fearful", "sinister", "warm"})
-_VOICE_ID = re.compile(r"^[\w.:-]{1,100}$")
+MAX_TTS_BODY_BYTES = 4 * 1024 * 1024
+MAX_LANGUAGE_CHARS = 40
+MAX_REFERENCE_TEXT_CHARS = 500
+MAX_REFERENCE_SECONDS = 30
+MIN_REFERENCE_RATE, MAX_REFERENCE_RATE = 8_000, 48_000
 MAX_SEED = 2**31 - 1
 
 
@@ -42,9 +47,8 @@ def _is_int(value: Any) -> bool:
 
 
 def _check_fields(body: dict, allowed: set) -> None:
-    unknown = sorted(set(body) - allowed)
-    if unknown:
-        raise HttpError(400, "bad_request", f"unknown field '{unknown[0]}'")
+    if set(body) - allowed:  # the name is not echoed: it comes from the request
+        raise HttpError(400, "bad_request", "the request has a field this API does not define")
 
 
 def _seed(body: dict) -> Optional[int]:
@@ -56,15 +60,37 @@ def _seed(body: dict) -> Optional[int]:
     return seed
 
 
+def _reference_wav(value: Any) -> bytes:
+    """Decode and check the reference clip. Messages never contain the data."""
+    bad = HttpError(400, "bad_request", "reference.audio must be base64 of a PCM 16-bit mono WAV file of at most 30 seconds")
+    if not isinstance(value, str) or not value:
+        raise bad
+    try:
+        data = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        raise bad from None
+    try:
+        with wave.open(io.BytesIO(data)) as w:
+            channels, width, rate, frames = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
+            if channels != 1 or width != 2 or not MIN_REFERENCE_RATE <= rate <= MAX_REFERENCE_RATE:
+                raise bad
+            if not 1 <= frames <= MAX_REFERENCE_SECONDS * rate:
+                raise bad
+            if len(w.readframes(frames)) != frames * 2:  # the header promises more than the file holds
+                raise bad
+    except (wave.Error, EOFError):
+        raise bad from None
+    return data
+
+
 class LocalAudioServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, config: Config, backend: Backend, clips: dict[str, VoiceClip]):
+    def __init__(self, config: Config, backend: Backend):
         super().__init__((config.host, config.port), _Handler)
         self.config = config
         self.backend = backend
-        self.clips = clips
         self.model_lock = threading.Lock()
 
     @property
@@ -118,7 +144,7 @@ class _Handler(BaseHTTPRequestHandler):
             if not hmac.compare_digest(supplied.encode("utf-8"), token.encode("utf-8")):
                 raise HttpError(401, "unauthorized", "a valid access token is required")
 
-    def _read_json(self) -> dict:
+    def _read_json(self, max_bytes: int) -> dict:
         if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             raise HttpError(415, "unsupported_media_type", "send application/json")
         if self.headers.get("Transfer-Encoding") is not None:
@@ -127,8 +153,8 @@ class _Handler(BaseHTTPRequestHandler):
         if raw_length is None or not raw_length.isdigit():
             raise HttpError(411, "length_required", "send a Content-Length")
         length = int(raw_length)
-        if length > MAX_BODY_BYTES:
-            raise HttpError(413, "too_large", f"requests are limited to {MAX_BODY_BYTES // 1024} KB")
+        if length > max_bytes:
+            raise HttpError(413, "too_large", f"requests are limited to {max_bytes // 1024} KB")
         try:
             body = json.loads(self.rfile.read(length).decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
@@ -149,7 +175,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._check_caller()
         if path == "/health":
             return self._health()
-        body = self._read_json()
+        body = self._read_json(MAX_TTS_BODY_BYTES if path == "/tts" else MAX_BODY_BYTES)
         return self._tts(body) if path == "/tts" else self._sfx(body)
 
     def _health(self) -> None:
@@ -162,30 +188,34 @@ class _Handler(BaseHTTPRequestHandler):
                 "backend": backend.name,
                 "tts": backend.tts_info(),
                 "sfx": backend.sfx_info(),
-                "voices": {vid: {"clipSha256": c.sha256, "transcriptSha256": c.transcript_sha256} for vid, c in sorted(self.server.clips.items())},
             },
         )
 
     def _tts(self, body: dict) -> None:
-        _check_fields(body, {"voiceId", "text", "delivery", "seed"})
-        voice_id = body.get("voiceId")
-        if not isinstance(voice_id, str) or not _VOICE_ID.match(voice_id):
-            raise HttpError(400, "bad_request", "voiceId is missing or invalid")
+        _check_fields(body, {"text", "language", "seed", "reference"})
         text = body.get("text")
         limit = self.server.config.max_text_chars
         if not isinstance(text, str) or not text.strip():
             raise HttpError(400, "bad_request", "text must not be blank")
         if len(text) > limit:
             raise HttpError(400, "bad_request", f"text is limited to {limit} characters")
-        delivery = body.get("delivery")
-        if delivery is not None and delivery not in DELIVERIES:
-            raise HttpError(400, "bad_request", "unknown delivery")
-        clip = self.server.clips.get(voice_id)
-        if clip is None:
-            raise HttpError(404, "unknown_voice", "no such voice in the catalogue")
+        language = body.get("language")
+        if not isinstance(language, str) or not language.strip() or len(language) > MAX_LANGUAGE_CHARS:
+            raise HttpError(400, "bad_request", f"language must be 1 to {MAX_LANGUAGE_CHARS} characters")
+        if body.get("seed") is None:
+            raise HttpError(400, "bad_request", "seed is required")
+        seed = _seed(body)
+        reference = body.get("reference")
+        if not isinstance(reference, dict):
+            raise HttpError(400, "bad_request", "reference must be an object with audio and text")
+        _check_fields(reference, {"audio", "text"})
+        reference_text = reference.get("text")
+        if not isinstance(reference_text, str) or not reference_text.strip() or len(reference_text) > MAX_REFERENCE_TEXT_CHARS:
+            raise HttpError(400, "bad_request", f"reference.text must be 1 to {MAX_REFERENCE_TEXT_CHARS} characters")
+        reference_wav = _reference_wav(reference.get("audio"))
         if self.server.backend.tts_info() is None:
             raise HttpError(503, "not_ready", "this backend has no speech model")
-        request = TtsRequest(voice_id, clip, text, delivery, _seed(body))
+        request = TtsRequest(text, language, reference_wav, reference_text, seed)
         self._render(lambda: self.server.backend.render_tts(request), "tts")
 
     def _sfx(self, body: dict) -> None:

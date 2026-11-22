@@ -1,8 +1,8 @@
 """Qwen3-TTS Base voice cloning on Apple Silicon, through mlx-audio.
 
-Every line is spoken by cloning the voice's reference clip, so a character sounds the same in
-every line. Delivery hints are not used (Task 5.1 decision, option a); they are still part of the
-cache key on the TypeScript side, so adopting another option later re-renders only those lines.
+Every line is spoken by cloning the reference clip the client sends with the request, so a
+character sounds the same in every line. The backend keeps each distinct reference (by SHA-256) as
+a file in a private temporary directory, because mlx-audio reads `ref_audio` from a path.
 
 Standard output carries only the service's one "listening" line, so anything the model library
 prints is sent to standard error instead.
@@ -15,7 +15,9 @@ import contextlib
 import hashlib
 import json
 import re
+import shutil
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -24,7 +26,7 @@ from ..wav import encode_pcm16
 from .base import Backend, BackendError, BackendUnavailable, SfxRequest, TtsRequest
 
 SAMPLE_RATE = 24_000
-LANGUAGE = "english"
+LANGUAGES = {"english": "english"}  # request language (lower-cased) -> mlx-audio lang_code
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -63,8 +65,15 @@ class QwenMlxBackend(Backend):
 
         self._model_name, self._revision = describe_snapshot(self._dir)
         self._weights_sha256 = file_sha256(weights.resolve())
+        self._refs_dir = Path(tempfile.mkdtemp(prefix="local-audio-refs-"))  # mode 0700, ours alone
+        self._refs: set[str] = set()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
-        self._model = self._pool.submit(self._load).result()
+        try:
+            self._model = self._pool.submit(self._load).result()
+        except BaseException:
+            self._pool.shutdown()
+            shutil.rmtree(self._refs_dir, ignore_errors=True)
+            raise
 
     def _load(self):
         try:
@@ -89,14 +98,27 @@ class QwenMlxBackend(Backend):
     def render_sfx(self, request: SfxRequest) -> bytes:
         raise BackendError("not_ready", "this backend has no sound-effect model", 503)
 
+    def _reference_path(self, wav: bytes) -> Path:
+        key = hashlib.sha256(wav).hexdigest()
+        path = self._refs_dir / f"{key}.wav"
+        if key not in self._refs:
+            tmp = self._refs_dir / f"{key}.tmp"
+            tmp.write_bytes(wav)
+            tmp.replace(path)
+            self._refs.add(key)
+        return path
+
     def _render(self, request: TtsRequest) -> bytes:
+        lang_code = LANGUAGES.get(request.language.strip().lower())
+        if lang_code is None:
+            raise BackendError("bad_request", "this backend speaks English only", 400)
         import mlx.core as mx
         import numpy as np
 
         mx.random.seed(request.seed if request.seed is not None else 0)  # same seed, same audio
         try:
             with contextlib.redirect_stdout(sys.stderr):
-                results = list(self._model.generate(text=request.text, lang_code=LANGUAGE, ref_audio=str(request.clip.path), ref_text=request.clip.transcript))
+                results = list(self._model.generate(text=request.text, lang_code=lang_code, ref_audio=str(self._reference_path(request.reference_wav)), ref_text=request.reference_text))
         except Exception:  # noqa: BLE001 - the message from the model library is not passed on
             raise BackendError("model_failed", "the speech model could not render this line", 502) from None
         if not results or any(r.sample_rate != SAMPLE_RATE for r in results):
@@ -118,3 +140,4 @@ class QwenMlxBackend(Backend):
 
         self._pool.submit(release).result()
         self._pool.shutdown()
+        shutil.rmtree(self._refs_dir, ignore_errors=True)

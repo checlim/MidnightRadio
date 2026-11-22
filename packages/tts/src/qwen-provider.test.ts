@@ -1,15 +1,15 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ASSUMED_MS_PER_CHAR, QwenTtsProvider, assertLoopbackUrl, loadQwenConfig, type QwenTtsOptions } from "./qwen-provider.js";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { ASSUMED_MS_PER_CHAR, QwenTtsProvider, assertServiceUrl, loadQwenConfig, type QwenTtsOptions } from "./qwen-provider.js";
 import { TtsError } from "./provider.js";
 import { RenderCache } from "./render-cache.js";
 import { renderSegments } from "./segments.js";
-import { clonableStubCatalogue, CLIP_TRANSCRIPT } from "./test-support/clonable-catalogue.js";
+import { clipBytes, clonableStubCatalogue, CLIP_TRANSCRIPT, writeClips } from "./test-support/clonable-catalogue.js";
 import { closedPort, startFakeService, type FakeService, type FakeState } from "./test-support/fake-audio-service.js";
 import { validateWav } from "./wav.js";
 
@@ -18,9 +18,17 @@ const catalogue = clonableStubCatalogue();
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 let service: FakeService;
+let clipDir: string;
+beforeAll(async () => {
+  clipDir = await mkdtemp(join(tmpdir(), "mr-clips-"));
+  await writeClips(clipDir, catalogue);
+});
+afterAll(() => rm(clipDir, { recursive: true, force: true }));
+/** connect() with the test clips; `extra` overrides any option. */
+const connect = (extra: Partial<QwenTtsOptions> & { baseUrl: string }) => QwenTtsProvider.connect({ catalogue, clipDir, ...extra });
 const open = async (state: Partial<FakeState> = {}, opts: Partial<QwenTtsOptions> = {}) => {
   service = await startFakeService(catalogue, state);
-  return { provider: await QwenTtsProvider.connect({ baseUrl: service.url, catalogue, ...opts }), service };
+  return { provider: await connect({ baseUrl: service.url, ...opts }), service };
 };
 afterEach(async () => service?.close());
 
@@ -68,93 +76,139 @@ describe("connecting", () => {
   });
 
   const refusals: [string, Partial<FakeState>, RegExp, boolean][] = [
-    ["an answer from some other service", { service: "something-else" }, /unreadable/, false],
+    ["an answer from some other kind of server", { healthBody: JSON.stringify({ hello: "world" }) }, /unreadable/, false],
     ["a different API version", { apiVersion: 2 }, /API version 2, expected 1/, false],
     ["no speech model", { tts: null }, /no speech model ready/, true],
     ["a speech model that is still loading", { tts: { sampleRate: 24_000, ready: false } }, /no speech model ready/, true],
+    ["a server still loading its model, with no weights hash yet", { healthBody: JSON.stringify({ apiVersion: 1, tts: { model: "m", revision: "r", weightsSha256: null, sampleRate: 24_000, ready: false } }) }, /no speech model ready/, true],
     ["a speech model at the wrong rate", { tts: { sampleRate: 44_100, ready: true } }, /44100 Hz/, false],
-    ["a voice missing from the service", { voices: {} }, /does not know voice "stub-announcer"/, false],
-    ["a reference clip that differs", { voices: Object.fromEntries(catalogue.voices.map((v) => [v.id, { clipSha256: v.id === "stub-f1" ? sha("other clip") : v.clip.sha256, transcriptSha256: sha(CLIP_TRANSCRIPT) }])) }, /reference clip for voice "stub-f1" differs/, false],
-    ["a transcript that differs", { voices: Object.fromEntries(catalogue.voices.map((v) => [v.id, { clipSha256: v.clip.sha256, transcriptSha256: v.id === "stub-m1" ? sha("other words") : sha(CLIP_TRANSCRIPT) }])) }, /transcript for voice "stub-m1" differs/, false],
     ["an error page", { healthStatus: 500, healthBody: "oops" }, /HTTP 500/, true],
     ["an unreadable answer", { healthBody: "not json" }, /unreadable/, false],
   ];
   it.each(refusals)("refuses %s", async (_label, state, message, retryable) => {
     service = await startFakeService(catalogue, state);
-    const e = await failure(QwenTtsProvider.connect({ baseUrl: service.url, catalogue }));
+    const e = await failure(connect({ baseUrl: service.url }));
     expect(e).toMatchObject({ kind: "unavailable", billed: false, retryable });
     expect(e.message).toMatch(message);
   });
 
+  it("checks every reference clip on disk against the catalogue before talking to the service", async () => {
+    service = await startFakeService(catalogue);
+    const dir = await mkdtemp(join(tmpdir(), "mr-clips-bad-"));
+    try {
+      await writeClips(dir, catalogue);
+      await writeFile(join(dir, "clips/stub-m1.wav"), clipBytes("someone else"));
+      expect(await failure(connect({ baseUrl: service.url, clipDir: dir }))).toMatchObject({ kind: "rejected", message: 'the reference clip for voice "stub-m1" does not match the catalogue\'s hash' });
+      await rm(join(dir, "clips/stub-f1.wav"));
+      expect((await failure(connect({ baseUrl: service.url, clipDir: dir }))).message).toMatch(/reference clip for voice "stub-f1" is missing/);
+      const escaping = clonableStubCatalogue();
+      escaping.voices[0]!.clip.file = "../outside.wav";
+      expect((await failure(connect({ baseUrl: service.url, clipDir: dir, catalogue: escaping }))).message).toMatch(/cannot be used for cloning|outside the catalogue folder/); // the catalogue schema refuses ".." first; the folder check is a second line
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    expect(service.requests).toEqual([]);
+  });
+
+  it("pins the model name (build and precision): refuses another one", async () => {
+    const pinned = clonableStubCatalogue({ models: [{ role: "voice-clone", name: "Qwen3-TTS-12Hz-1.7B-Base (float32)", revision: "fake-1" }] });
+    service = await startFakeService(pinned, { model: "Qwen3-TTS-12Hz-1.7B-Base (float16)" });
+    expect((await failure(connect({ baseUrl: service.url, catalogue: pinned }))).message).toBe('the speech service runs "Qwen3-TTS-12Hz-1.7B-Base (float16)", not the "Qwen3-TTS-12Hz-1.7B-Base (float32)" the catalogue pins');
+    service.state.model = "Qwen3-TTS-12Hz-1.7B-Base (float32)";
+    expect((await connect({ baseUrl: service.url, catalogue: pinned })).identity.model).toBe("Qwen3-TTS-12Hz-1.7B-Base (float32)");
+  });
+
   it("refuses a model revision other than the one the catalogue pins, and accepts the pinned one", async () => {
-    const pinned = clonableStubCatalogue({ models: [{ role: "voice-clone", name: "Base", revision: "rev-A" }] });
+    const pinned = clonableStubCatalogue({ models: [{ role: "voice-clone", name: "fake-tts", revision: "rev-A" }] });
     service = await startFakeService(pinned, { revision: "rev-B" });
-    const e = await failure(QwenTtsProvider.connect({ baseUrl: service.url, catalogue: pinned }));
+    const e = await failure(connect({ baseUrl: service.url, catalogue: pinned }));
     expect(e.message).toMatch(/revision "rev-B" is not the one the catalogue pins \("rev-A"\)/);
     service.state.revision = "rev-A";
-    expect((await QwenTtsProvider.connect({ baseUrl: service.url, catalogue: pinned })).identity.revision).toBe("rev-A");
+    expect((await connect({ baseUrl: service.url, catalogue: pinned })).identity.revision).toBe("rev-A");
   });
 
   it("pins the weights: refuses different or unreported weights when the catalogue pins a hash, and puts the hash in the identity", async () => {
     const weights = sha("the pinned weights");
-    const pinned = clonableStubCatalogue({ models: [{ role: "voice-clone", name: "Base", revision: "fake-1", weightsSha256: weights }] });
+    const pinned = clonableStubCatalogue({ models: [{ role: "voice-clone", name: "fake-tts", revision: "fake-1", weightsSha256: weights }] });
     service = await startFakeService(pinned, { tts: { sampleRate: 24_000, ready: true, weightsSha256: sha("other weights") } });
-    expect((await failure(QwenTtsProvider.connect({ baseUrl: service.url, catalogue: pinned }))).message).toMatch(/weights \([0-9a-f]{12}\) are not the ones the catalogue pins/);
+    expect((await failure(connect({ baseUrl: service.url, catalogue: pinned }))).message).toMatch(/weights \([0-9a-f]{12}\) are not the ones the catalogue pins/);
     service.state.tts = { sampleRate: 24_000, ready: true };
-    expect((await failure(QwenTtsProvider.connect({ baseUrl: service.url, catalogue: pinned }))).message).toMatch(/weights \(not reported\)/);
+    expect((await failure(connect({ baseUrl: service.url, catalogue: pinned }))).message).toMatch(/weights \(not reported\)/);
     service.state.tts = { sampleRate: 24_000, ready: true, weightsSha256: weights };
-    const provider = await QwenTtsProvider.connect({ baseUrl: service.url, catalogue: pinned });
+    const provider = await connect({ baseUrl: service.url, catalogue: pinned });
     expect(provider.identity.settings).toMatchObject({ weightsSha256: weights });
   });
 
   it("gives renders from different weights different cache keys", async () => {
     service = await startFakeService(catalogue, { tts: { sampleRate: 24_000, ready: true, weightsSha256: sha("weights A") } });
-    const a = await QwenTtsProvider.connect({ baseUrl: service.url, catalogue });
+    const a = await connect({ baseUrl: service.url });
     service.state.tts = { sampleRate: 24_000, ready: true, weightsSha256: sha("weights B") };
-    const b = await QwenTtsProvider.connect({ baseUrl: service.url, catalogue });
+    const b = await connect({ baseUrl: service.url });
     const { renderCacheKey } = await import("./cache-key.js");
     expect(renderCacheKey(a, say("Hello."))).not.toBe(renderCacheKey(b, say("Hello.")));
   });
 
   it("refuses a token the service does not accept, and a catalogue that cannot be cloned from", async () => {
     service = await startFakeService(catalogue, { token: TOKEN });
-    const e = await failure(QwenTtsProvider.connect({ baseUrl: service.url, catalogue, token: "wrong-token-value-123456" }));
+    const e = await failure(connect({ baseUrl: service.url, token: "wrong-token-value-123456" }));
     expect(e).toMatchObject({ kind: "rejected", retryable: false });
     expect(e.message).toMatch(/LOCAL_AUDIO_TOKEN/);
     expect(e.message).not.toContain("wrong-token-value");
-    expect(await failure(QwenTtsProvider.connect({ baseUrl: service.url, catalogue: { ...catalogue, voices: catalogue.voices.map(({ clip: _c, ...v }) => v) } as never, token: TOKEN }))).toMatchObject({ kind: "rejected" });
+    expect(await failure(connect({ baseUrl: service.url, catalogue: { ...catalogue, voices: catalogue.voices.map(({ clip: _c, ...v }) => v) } as never, token: TOKEN }))).toMatchObject({ kind: "rejected" });
   });
 
   it("reports a service that is not running as retryable, and not as billed", async () => {
     const port = await closedPort();
-    const e = await failure(QwenTtsProvider.connect({ baseUrl: `http://127.0.0.1:${port}`, catalogue }));
+    const e = await failure(connect({ baseUrl: `http://127.0.0.1:${port}` }));
     expect(e).toMatchObject({ kind: "unavailable", billed: false, retryable: true });
     expect(e.message).toMatch(/not running/);
   });
 });
 
-describe("loopback only", () => {
-  it.each(["http://127.0.0.1:8765", "http://localhost:8765", "http://127.0.0.1"])("accepts %s", (url) => {
-    expect(() => assertLoopbackUrl(url)).not.toThrow();
+describe("where speech may be sent", () => {
+  it.each([
+    ["http://127.0.0.1:8765", undefined],
+    ["http://localhost:8765", undefined],
+    ["http://[::1]:8765", undefined],
+    ["https://abc.trycloudflare.com", TOKEN],
+    ["https://gpu.example.org:8443/speech", TOKEN],
+  ])("accepts %s", (url, token) => {
+    expect(() => assertServiceUrl(url, token)).not.toThrow();
   });
-  it.each(["http://example.com:8765", "http://192.168.1.20:8765", "https://127.0.0.1:8765", "http://user:pass@127.0.0.1:8765", "http://0.0.0.0:8765", "ftp://127.0.0.1", "not a url", ""])("refuses %s", async (url) => {
-    expect(() => assertLoopbackUrl(url)).toThrow(/not a valid URL|http on 127\.0\.0\.1 or localhost/);
-    expect(await failure(QwenTtsProvider.connect({ baseUrl: url, catalogue, token: TOKEN }))).toMatchObject({ kind: "rejected" });
+  it.each([
+    ["http://example.com:8765", TOKEN, /must be https unless/],
+    ["http://192.168.1.20:8765", TOKEN, /must be https unless/],
+    ["https://abc.trycloudflare.com", undefined, /needs LOCAL_AUDIO_TOKEN \(at least 16 characters\)/],
+    ["https://abc.trycloudflare.com", "too-short", /needs LOCAL_AUDIO_TOKEN/],
+    ["https://user:pass@abc.trycloudflare.com", TOKEN, /must not contain credentials/],
+    ["https://abc.trycloudflare.com/?key=1", TOKEN, /query or fragment/],
+    ["ftp://127.0.0.1", TOKEN, /must be https/],
+    ["not a url", TOKEN, /not a valid URL/],
+    ["", TOKEN, /not a valid URL/],
+  ] as const)("refuses %s", async (url, token, message) => {
+    expect(() => assertServiceUrl(url, token)).toThrow(message);
+    expect(await failure(connect({ baseUrl: url, token }))).toMatchObject({ kind: "rejected" });
+  });
+  it("talks to a server given with a trailing slash", async () => {
+    service = await startFakeService(catalogue);
+    await expect(connect({ baseUrl: `${service.url}/` })).resolves.toBeDefined();
+    expect(service.requests.map((r) => r.url)).toEqual(["/health"]);
   });
 });
 
 describe("rendering", () => {
-  it("returns the service's WAV, sending exactly the voice, the text as given, the delivery and the seed", async () => {
+  it("returns the service's WAV, sending the text as given, the language, the seed and the voice's own clip and transcript", async () => {
     const { provider } = await open({}, { seed: 42 });
     const wav = await provider.synthesize({ voiceId: "stub-f1", text: "  “Welcome,” he said.\n", delivery: "sinister" });
     expect(validateWav(wav).frames).toBeGreaterThan(0);
     const sent = service.requests.at(-1)!;
     expect(sent.method).toBe("POST");
     expect(sent.headers["content-type"]).toBe("application/json");
-    expect(sent.body).toEqual({ voiceId: "stub-f1", text: "  “Welcome,” he said.\n", delivery: "sinister", seed: 42 });
+    // No voice id and no delivery hint: the server only ever sees a clip to clone (Task 5.1, option a).
+    expect(sent.body).toEqual({ text: "  “Welcome,” he said.\n", language: "English", seed: 42, reference: { audio: clipBytes("stub-f1").toString("base64"), text: CLIP_TRANSCRIPT } });
     expect(provider.identity.settings).toMatchObject({ seed: 42 });
-    await provider.synthesize(say("No hint."));
-    expect(service.requests.at(-1)!.body).toEqual({ voiceId: "stub-f1", text: "No hint.", seed: 42 });
+    await provider.synthesize(say("Another voice.", "stub-m1"));
+    expect((service.requests.at(-1)!.body as { reference: { audio: string } }).reference.audio).toBe(clipBytes("stub-m1").toString("base64"));
   });
 
   it("refuses an invalid request or an unknown voice without contacting the service", async () => {
@@ -174,7 +228,7 @@ describe("rendering", () => {
     };
     it.each([
       [400, "bad_request", "rejected", false, false],
-      [404, "unknown_voice", "rejected", false, false],
+      [404, "not_found", "rejected", false, false],
       [411, "length_required", "rejected", false, false],
       [413, "too_large", "rejected", false, false],
       [415, "unsupported_media_type", "rejected", false, false],
@@ -196,7 +250,7 @@ describe("rendering", () => {
       const { provider, service } = await open();
       service.state.tts_handler = respond(500, "../../etc/passwd; DROP TABLE");
       const e = await failure(provider.synthesize(say("Hello.")));
-      expect(e.message).toBe("the local audio service failed (HTTP 500, unknown)");
+      expect(e.message).toBe("the speech service failed (HTTP 500, unknown)");
     });
 
     it("rejects an answer that is not WAV audio", async () => {
@@ -293,7 +347,7 @@ describe("rendering", () => {
   });
 });
 
-describe("local audio settings from the environment", () => {
+describe("speech service settings from the environment", () => {
   it("has defaults, and reads each variable", () => {
     expect(loadQwenConfig({})).toEqual({ baseUrl: "http://127.0.0.1:8765", token: undefined, timeoutMs: 600_000, msPerChar: 118, seed: 0 });
     expect(loadQwenConfig({ LOCAL_AUDIO_URL: "http://localhost:9000", LOCAL_AUDIO_TOKEN: ` ${TOKEN} `, LOCAL_AUDIO_TIMEOUT_MS: "90000", LOCAL_AUDIO_MS_PER_CHAR: "12.5", TTS_SEED: "7" })).toEqual({
@@ -305,12 +359,14 @@ describe("local audio settings from the environment", () => {
     });
   });
 
-  it("names a malformed variable without echoing its value, and refuses a non-loopback address", () => {
+  it("names a malformed variable without echoing its value, and applies the address rules", () => {
     for (const env of [{ LOCAL_AUDIO_TIMEOUT_MS: "soon" }, { LOCAL_AUDIO_MS_PER_CHAR: "-1" }, { TTS_SEED: "1.5" }]) {
       expect(() => loadQwenConfig(env)).toThrow(/is malformed/);
     }
-    expect(() => loadQwenConfig({ LOCAL_AUDIO_TIMEOUT_MS: "hunter2-secret" })).toThrow("invalid local audio configuration: LOCAL_AUDIO_TIMEOUT_MS is malformed");
-    expect(() => loadQwenConfig({ LOCAL_AUDIO_URL: "http://example.com:8765", LOCAL_AUDIO_TOKEN: TOKEN })).toThrow(/127\.0\.0\.1 or localhost/);
+    expect(() => loadQwenConfig({ LOCAL_AUDIO_TIMEOUT_MS: "hunter2-secret" })).toThrow("invalid speech service configuration: LOCAL_AUDIO_TIMEOUT_MS is malformed");
+    expect(() => loadQwenConfig({ LOCAL_AUDIO_URL: "http://example.com:8765", LOCAL_AUDIO_TOKEN: TOKEN })).toThrow(/must be https unless/);
+    expect(() => loadQwenConfig({ LOCAL_AUDIO_URL: "https://abc.trycloudflare.com" })).toThrow(/needs LOCAL_AUDIO_TOKEN/);
+    expect(loadQwenConfig({ LOCAL_AUDIO_URL: "https://abc.trycloudflare.com", LOCAL_AUDIO_TOKEN: TOKEN }).baseUrl).toBe("https://abc.trycloudflare.com");
   });
 });
 
@@ -342,7 +398,7 @@ describe("with the render cache", () => {
     expect(out[0]).toMatchObject({ status: "failed", attempts: 1, error: { kind: "unavailable", retryable: false } });
     expect(await cache.lookup(say("Hello there."))).toBeUndefined();
 
-    const other = await QwenTtsProvider.connect({ baseUrl: service.url, catalogue }); // a fresh connection sees the new revision
+    const other = await connect({ baseUrl: service.url }); // a fresh connection sees the new revision
     expect(new RenderCache({ dir, provider: other }).keyOf(say("Hello there."))).not.toBe(cache.keyOf(say("Hello there.")));
     expect(validateWav(await other.synthesize(say("Hello there."))).frames).toBeGreaterThan(0);
   });

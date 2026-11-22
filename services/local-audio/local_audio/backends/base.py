@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
-from ..catalogue import VoiceClip
 
 
 class BackendUnavailable(Exception):
@@ -23,10 +22,10 @@ class BackendError(Exception):
 
 @dataclass(frozen=True)
 class TtsRequest:
-    voice_id: str
-    clip: VoiceClip
     text: str
-    delivery: Optional[str]
+    language: str
+    reference_wav: bytes
+    reference_text: str
     seed: Optional[int]
 
 

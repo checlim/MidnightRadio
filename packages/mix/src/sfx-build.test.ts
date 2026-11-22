@@ -117,11 +117,7 @@ describe.skipIf(!hasFfmpeg || !hasUv)("buildSfx end to end (real generator, loca
   const TOKEN = "build-test-token-0123456789";
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), "mr-build-e2e-"));
-    const clip = new TextEncoder().encode("not really a clip");
-    await mkdir(join(root, "svc/clips"), { recursive: true });
-    await writeFile(join(root, "svc/clips/v.wav"), clip);
-    await writeFile(join(root, "svc/catalogue.json"), JSON.stringify({ voices: [{ id: "narrator", clip: { file: "clips/v.wav", sha256: sha(clip), transcript: "Good evening." } }] }));
-    child = spawn("uv", ["run", "--no-project", "--python", ">=3.10", "python", "-m", "local_audio", "--catalogue", join(root, "svc/catalogue.json"), "--backend", "fake", "--port", "0"], {
+    child = spawn("uv", ["run", "--no-project", "--python", ">=3.10", "python", "-m", "local_audio", "--backend", "fake", "--port", "0"], {
       cwd: serviceDir,
       env: { ...process.env, LOCAL_AUDIO_TOKEN: TOKEN },
       stdio: ["ignore", "pipe", "pipe"],

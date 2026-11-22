@@ -45,9 +45,7 @@ describe.skipIf(!ready)("real Qwen3-TTS, end to end", () => {
     // Two spike voices as the "reserved" pair is enough for this test; a real catalogue has many more.
     catalogue = requireClonable({ ...STUB_VOICE_CATALOGUE, reserved: { announcer: "nobleman", narrator: "young-man" }, voices: [...entries, { ...entries[0]!, id: "spare" }] });
     await writeFile(join(dir, "clips", "spare.wav"), await readFile(join(spike, "ref-nobleman.wav")));
-    await writeFile(join(dir, "catalogue.json"), JSON.stringify(catalogue));
-
-    child = spawn(python, ["-m", "local_audio", "--catalogue", join(dir, "catalogue.json"), "--backend", "qwen-mlx", "--tts-model", BASE!, "--port", "0"], {
+    child = spawn(python, ["-m", "local_audio", "--backend", "qwen-mlx", "--tts-model", BASE!, "--port", "0"], {
       cwd: serviceDir,
       env: { ...process.env, HF_HUB_OFFLINE: "1" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -84,7 +82,7 @@ describe.skipIf(!ready)("real Qwen3-TTS, end to end", () => {
   });
 
   it("connects, renders verbatim book lines through the cache, and serves them from disk the second time", async () => {
-    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, seed: 1940 });
+    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, clipDir: dir, seed: 1940 });
     expect(provider.identity).toMatchObject({ provider: "qwen3-tts", model: "Qwen3-TTS-12Hz-1.7B-Base-bf16" });
     expect(provider.identity.settings.weightsSha256).toBe("81fb76175ff74e69be25fef2cc3e54f016df3034f1514c8e1c89da06a3510cff");
 

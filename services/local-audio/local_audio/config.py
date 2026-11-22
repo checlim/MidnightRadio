@@ -21,7 +21,6 @@ class ConfigError(Exception):
 class Config:
     host: str
     port: int
-    catalogue_path: Path
     backend: str
     token: Optional[str] = None
     max_text_chars: int = 4_000
@@ -34,7 +33,6 @@ def parse_config(argv: Sequence[str], env: Mapping[str, str]) -> Config:
     parser = argparse.ArgumentParser(prog="local_audio", description=__doc__.splitlines()[0])
     parser.add_argument("--host", default="127.0.0.1", help="loopback address only (default 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8765, help="0 picks a free port")
-    parser.add_argument("--catalogue", required=True, type=Path, help="path to catalogue.json")
     parser.add_argument("--backend", required=True, help="model backend; 'fake' returns tones for tests")
     parser.add_argument("--tts-model", type=Path, help="local Qwen3-TTS Base snapshot directory (qwen-mlx backend)")
     parser.add_argument("--fake-delay-ms", type=int, default=0, help="slow the fake backend down, for timeout tests")
@@ -58,7 +56,6 @@ def parse_config(argv: Sequence[str], env: Mapping[str, str]) -> Config:
     return Config(
         host="127.0.0.1" if args.host == "localhost" else args.host,
         port=args.port,
-        catalogue_path=args.catalogue,
         backend=args.backend,
         token=token,
         queue_timeout_s=args.queue_timeout_s,

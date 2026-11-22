@@ -42,9 +42,8 @@ describe.skipIf(!hasUv)("contract with the real Python service (fake backend)", 
     dir = await mkdtemp(join(tmpdir(), "mr-contract-"));
     await mkdir(join(dir, "clips"));
     for (const v of catalogue.voices) await writeFile(join(dir, v.clip.file), clipBytes(v.id));
-    await writeFile(join(dir, "catalogue.json"), JSON.stringify(catalogue));
-
-    child = spawn("uv", ["run", "--no-project", "--python", ">=3.10", "python", "-m", "local_audio", "--catalogue", join(dir, "catalogue.json"), "--backend", "fake", "--port", "0"], {
+    // The service holds no voices: the clips stay here and travel with each line.
+    child = spawn("uv", ["run", "--no-project", "--python", ">=3.10", "python", "-m", "local_audio", "--backend", "fake", "--port", "0"], {
       cwd: serviceDir,
       env: { ...process.env, LOCAL_AUDIO_TOKEN: TOKEN },
       stdio: ["ignore", "pipe", "pipe"],
@@ -90,21 +89,21 @@ describe.skipIf(!hasUv)("contract with the real Python service (fake backend)", 
     throw new Error("expected a TtsError");
   };
 
-  it("connects, verifying every voice's clip and transcript against the catalogue", async () => {
-    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, token: TOKEN });
+  it("connects, checking every clip on disk and the service's speech model", async () => {
+    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, clipDir: dir, token: TOKEN });
     expect(provider.identity).toMatchObject({ provider: "qwen3-tts", model: "fake-tts", revision: "fake-1" });
     expect((await provider.voices()).length).toBe(12);
   });
 
-  it("refuses to connect without the token, or with a catalogue whose clip differs from the service's", async () => {
-    expect(await failure(QwenTtsProvider.connect({ baseUrl, catalogue }))).toMatchObject({ kind: "rejected" });
+  it("refuses to connect without the token, or with a clip that does not match the catalogue", async () => {
+    expect(await failure(QwenTtsProvider.connect({ baseUrl, catalogue, clipDir: dir }))).toMatchObject({ kind: "rejected" });
     const changed = clonableStubCatalogue();
     changed.voices[2]!.clip.sha256 = "0".repeat(64);
-    expect((await failure(QwenTtsProvider.connect({ baseUrl, catalogue: changed, token: TOKEN }))).message).toMatch(/reference clip for voice "stub-f1" differs/);
+    expect((await failure(QwenTtsProvider.connect({ baseUrl, catalogue: changed, clipDir: dir, token: TOKEN }))).message).toMatch(/reference clip for voice "stub-f1" does not match/);
   });
 
   it("renders valid audio through the render cache, which the second run then serves from disk", async () => {
-    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, token: TOKEN });
+    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, clipDir: dir, token: TOKEN });
     const cache = new RenderCache({ dir: join(dir, "cache"), provider });
     const req = { voiceId: "stub-f1", text: "Good evening, listeners." };
     const first = await cache.render(req);
@@ -116,17 +115,21 @@ describe.skipIf(!hasUv)("contract with the real Python service (fake backend)", 
   });
 
   it("sends the same audio for the same request, and different audio for another voice", async () => {
-    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, token: TOKEN });
+    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, clipDir: dir, token: TOKEN });
     const a = await provider.synthesize({ voiceId: "stub-f1", text: "Hello there." });
     expect((await provider.synthesize({ voiceId: "stub-f1", text: "Hello there." })).equals(a)).toBe(true);
     expect((await provider.synthesize({ voiceId: "stub-m1", text: "Hello there." })).equals(a)).toBe(false);
   });
 
-  it("maps the service's own errors: an unknown voice is refused before the request, bad input is rejected", async () => {
-    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, token: TOKEN });
+  it("maps the service's own errors: an unknown voice is refused before the request, bad input is rejected by the server", async () => {
+    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, clipDir: dir, token: TOKEN });
     expect(await failure(provider.synthesize({ voiceId: "nobody", text: "Hi" }))).toMatchObject({ kind: "rejected" });
-    const res = await fetch(`${baseUrl}/tts`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ voiceId: "stub-f1", text: "Hi", pitch: 2 }) });
-    expect(res.status).toBe(400);
+    const tts = (body: unknown) => fetch(`${baseUrl}/tts`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` }, body: JSON.stringify(body) });
+    const reference = { audio: clipBytes("stub-f1").toString("base64"), text: "The night air is chill." };
+    expect((await tts({ voiceId: "stub-f1", text: "Hi", pitch: 2 })).status).toBe(400); // the old shape
+    expect((await tts({ text: "Hi", language: "English", seed: 0, reference: { ...reference, audio: "not base64!" } })).status).toBe(400);
+    expect((await tts({ text: "Hi", language: "English", seed: 0, reference: { ...reference, extra: 1 } })).status).toBe(400);
+    expect((await tts({ text: "Hi", language: "English", seed: 0, reference })).status).toBe(200);
   });
 
   it("serves sound effects as 48 kHz mono WAV (used by the foley task)", async () => {
@@ -152,7 +155,7 @@ describe.skipIf(!hasUv)("contract with the real Python service (fake backend)", 
   });
 
   it("is reported as not running, and not billed, once it has been stopped", async () => {
-    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, token: TOKEN });
+    const provider = await QwenTtsProvider.connect({ baseUrl, catalogue, clipDir: dir, token: TOKEN });
     process.kill(-child.pid!, "SIGTERM");
     await new Promise<void>((r) => (child.exitCode !== null ? r() : child.once("exit", () => r())));
     expect(child.exitCode).toBe(0); // a clean shutdown on SIGTERM

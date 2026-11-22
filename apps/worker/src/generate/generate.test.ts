@@ -167,11 +167,11 @@ describe("stations", () => {
 
 describe("preflight", () => {
   let dir: string;
-  let paths: { voiceCatalogue: string; sfxIndex: string; styleGuide: string };
+  let paths: { voiceCatalogue: string; voiceClips: string; sfxIndex: string; styleGuide: string };
   const sfx: SfxCatalogue = { version: 1, id: "lib", entries: [{ id: "theme_x", kind: "music", title: "Theme", path: "music/t.wav", sha256: "a".repeat(64), durationMs: 3000, loopable: false, peakDb: -1, tags: [], source: { type: "project", author: "x", licence: "CC0-1.0" } }], musicCues: { theme: "theme_x" } };
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "mr-preflight-"));
-    paths = { voiceCatalogue: join(dir, "voices.json"), sfxIndex: join(dir, "index.json"), styleGuide: join(dir, "style.md") };
+    paths = { voiceCatalogue: join(dir, "voices.json"), voiceClips: dir, sfxIndex: join(dir, "index.json"), styleGuide: join(dir, "style.md") };
     const clip = { file: "clips/a.wav", sha256: "b".repeat(64), transcript: "Good evening." };
     await writeFile(paths.voiceCatalogue, JSON.stringify({ ...STUB_VOICE_CATALOGUE, voices: STUB_VOICE_CATALOGUE.voices.map((v) => ({ ...v, description: v.description ?? "A voice.", clip })) }));
     await writeFile(paths.sfxIndex, JSON.stringify(sfx));
@@ -215,7 +215,7 @@ describe("preflight", () => {
         expect.stringMatching(/^no LLM configured: set LLM_API_KEY and LLM_MODEL/),
         expect.stringMatching(/^no sound library at .*: run pnpm sfx:build/),
         "ffprobe is not on the PATH (macOS: brew install ffmpeg)",
-        expect.stringMatching(/^Qwen3-TTS is not ready: the local audio service is not running\. Start services\/local-audio/),
+        expect.stringMatching(/^Qwen3-TTS is not ready: the local audio service is not running\. Start the speech server/),
       ]);
     }
     expect(fetched).toBe(0);

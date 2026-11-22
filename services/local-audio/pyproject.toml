@@ -3,7 +3,7 @@ name = "midnight-radio-local-audio"
 version = "0.0.0"
 description = "Local host for Qwen3-TTS and MOSS-SoundEffect. Runs only on the generation machine, never in the deployed container."
 requires-python = ">=3.10"
-# The server, the catalogue checks and the fake test backend use the standard library only.
+# The server, the request checks and the fake test backend use the standard library only.
 # The real model backends add their own dependencies (see README.md) once they exist.
 dependencies = []
 

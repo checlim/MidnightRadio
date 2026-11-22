@@ -22,9 +22,13 @@ VOICES_DIR = ROOT / "assets/voices"
 # The models the catalogue is pinned to (see services/local-audio/README.md).
 MODELS = [
     {"role": "voice-design", "name": "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16", "revision": "7d3824abff87e49756bb0f83fb5411de75d160c4", "weightsSha256": "96ae28bec2205ec0b5e0c750bea2b8a5deac4f14d33a8a25a5f753299486b70e"},
-    {"role": "voice-clone", "name": "Qwen3-TTS-12Hz-1.7B-Base-bf16", "revision": "a6eb4f68e4b056f1215157bb696209bc82a6db48", "weightsSha256": "81fb76175ff74e69be25fef2cc3e54f016df3034f1514c8e1c89da06a3510cff"},
+    # Speech is rendered by the official PyTorch build on a CUDA GPU (services/local-audio/kaggle), at
+    # float32 (a Kaggle T4 has no native bf16). The name carries the precision, so it is pinned too.
+    # Version 1 pinned the MLX conversion on an Apple M2 ("Qwen3-TTS-12Hz-1.7B-Base-bf16", revision
+    # a6eb4f68e4b056f1215157bb696209bc82a6db48, weights 81fb7617…); the voice clips are unchanged.
+    {"role": "voice-clone", "name": "Qwen3-TTS-12Hz-1.7B-Base (float32)", "revision": "fd4b254389122332181a7c3db7f27e918eec64e3", "weightsSha256": "38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c"},
 ]
-CATALOGUE = {"id": "midnight-radio-qwen3-voices", "provider": "qwen3-tts", "model": "Qwen3-TTS-12Hz-1.7B-Base-bf16", "version": "1", "seed": "midnight-radio-voices-1"}
+CATALOGUE = {"id": "midnight-radio-qwen3-voices", "provider": "qwen3-tts", "model": "Qwen3-TTS-12Hz-1.7B-Base (float32)", "version": "2", "seed": "midnight-radio-voices-1"}
 
 
 def sha256(path: Path) -> str:

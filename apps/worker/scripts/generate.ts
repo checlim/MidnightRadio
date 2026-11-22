@@ -63,7 +63,7 @@ const db = openDb(join(dataDir, DB_FILE));
 try {
   const check = await preflight(
     process.env,
-    { voiceCatalogue: join(root, "assets/voices/catalogue.json"), sfxIndex: join(root, "assets/sfx/index.json"), styleGuide: join(root, ".kiro/steering/radio-voice.md") },
+    { voiceCatalogue: join(root, "assets/voices/catalogue.json"), voiceClips: join(root, "assets/voices"), sfxIndex: join(root, "assets/sfx/index.json"), styleGuide: join(root, ".kiro/steering/radio-voice.md") },
     needsLlm(db, plan, { chapters, charBudget: 0 }),
   );
   if (!check.ok) stop(`fix these first, then run again:\n${check.problems.map((p) => `  - ${p}`).join("\n")}`);

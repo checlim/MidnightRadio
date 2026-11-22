@@ -1,6 +1,6 @@
 # local-audio
 
-A small HTTP service that hosts the speech model (Qwen3-TTS) on **the generation machine**, and implements the [sound-effect service API](../../docs/sfx-service-api.md) on loopback. It is never part of the deployed container: the live site only plays pre-rendered episodes.
+A small HTTP service that hosts the speech model (Qwen3-TTS) on **the generation machine**, and implements the [speech service API](../../docs/tts-service-api.md) and the [sound-effect service API](../../docs/sfx-service-api.md) on loopback. It is a plain speech engine: it holds no voices or catalogue. The client sends each voice's reference clip (and its transcript) with every line, and does the hash and model-pin checks itself. It is never part of the deployed container: the live site only plays pre-rendered episodes.
 
 **Status.** Two backends: `qwen-mlx` speaks with Qwen3-TTS on Apple Silicon (built and tested against the real model on an M2), and `fake` returns tones for tests. No real sound-effect backend is built here: on a 16 GB M2, MOSS-SoundEffect v2.0 takes 11–12.5 minutes per clip (Task 6.1 spike), so foley comes from a remote server implementing the same API.
 
@@ -11,7 +11,7 @@ Needs [uv](https://docs.astral.sh/uv/) and Python 3.10 or newer. The server itse
 ```sh
 cd services/local-audio
 uv run --no-project --python ">=3.10" python -m local_audio \
-  --catalogue path/to/catalogue.json --backend fake --port 8765
+  --backend fake --port 8765
 ```
 
 It prints `{"listening": "http://127.0.0.1:8765"}` when ready and stops cleanly on SIGTERM or Ctrl+C. `--port 0` picks a free port.
@@ -27,7 +27,6 @@ uv run --no-project --python ">=3.10" python -m unittest discover -s tests -t .
 
 | Setting | Meaning |
 |---|---|
-| `--catalogue` | Path to `catalogue.json` (required). Every voice needs a reference clip with a SHA-256 and a transcript; the service refuses to start if a clip is missing, outside the catalogue directory, or does not match its hash. |
 | `--backend` | Required, so a real run can never silently fall back to tones. |
 | `--host` | Loopback only (`127.0.0.1` or `localhost`). Anything else is refused. |
 | `--port` | Default 8765. |
@@ -37,11 +36,11 @@ uv run --no-project --python ">=3.10" python -m unittest discover -s tests -t .
 
 | Endpoint | Request | Answer |
 |---|---|---|
-| `GET /health` | none | JSON: service name, `apiVersion`, backend, `tts` and `sfx` model info (`model`, `revision`, `sampleRate`, `ready`; `sfx` also `license` and optional `weightsSha256`), and for every voice its `clipSha256` and `transcriptSha256`. The TypeScript client compares these with its catalogue before trusting any audio. |
-| `POST /tts` | JSON `{voiceId, text, delivery?, seed?}` | `audio/wav` (24 kHz, mono, 16-bit) with `X-Model-Revision` and `X-Render-Ms`. |
+| `GET /health` | none | JSON: service name, `apiVersion`, backend, and `tts` and `sfx` model info (`model`, `revision`, `sampleRate`, `ready`; `tts` from `qwen-mlx` also `weightsSha256`; `sfx` also `license`). There is no voice list. |
+| `POST /tts` | JSON `{text, language, seed, reference: {audio, text}}`, up to 4 MB | `audio/wav` (24 kHz, mono, 16-bit) with `X-Model-Revision` and `X-Render-Ms`. `reference.audio` is base64 of a PCM 16-bit mono WAV (8 to 48 kHz, at most 30 s); `reference.text` is what it says (1 to 500 characters). `seed` is required. Full contract: [`docs/tts-service-api.md`](../../docs/tts-service-api.md). |
 | `POST /sfx` | JSON `{prompt, durationSec, seed?}` | `audio/wav` (mono, 16-bit) with `X-Model-Revision`. The full contract, which remote servers also follow, is [`docs/sfx-service-api.md`](../../docs/sfx-service-api.md). |
 
-Errors are JSON `{"error": {"code", "message"}}`: 400 bad request, 401 unauthorized, 403 bad host or origin, 404 unknown voice or path, 405 wrong method, 411 and 413 and 415 for the body, 503 busy or not ready, 500 internal (no details).
+Errors are JSON `{"error": {"code", "message"}}`: 400 bad request, 401 unauthorized, 403 bad host or origin, 404 unknown path, 405 wrong method, 411 and 413 and 415 for the body, 503 busy or not ready, 500 internal (no details).
 
 ## Safety
 
@@ -49,7 +48,7 @@ It is a model server on a personal machine, so:
 
 - it listens on loopback only, and the `Host` header must name that address and port, which blocks DNS-rebinding pages;
 - any request carrying an `Origin` header (a web page) is refused;
-- only JSON, with a 64 KB body limit and strict field checks;
+- only JSON, with a body limit (4 MB for `/tts`, which carries the reference clip; 64 KB for `/sfx`) and strict field checks;
 - the token is compared in constant time and is never logged or echoed;
 - one model call runs at a time; others wait, up to a time limit, then get 503;
 - logs contain the method, path and status only: never bodies, headers or tokens, so dialogue text is not logged;
@@ -57,7 +56,7 @@ It is a model server on a personal machine, so:
 
 ## The `qwen-mlx` backend (Apple Silicon)
 
-Clones each catalogue voice from its reference clip with Qwen3-TTS 1.7B Base, so a character sounds the same on every line. Delivery hints are accepted but not used (Task 5.1 decision, option a), so each voice stays identical on every line. Needs Python 3.11+ for `mlx-audio`; this was set up and measured on an Apple M2 with 16 GB.
+Clones the voice from the reference clip sent with each request, using Qwen3-TTS 1.7B Base, so a character sounds the same on every line. It speaks English only (other `language` values get 400). Each distinct reference is written once to a private temporary directory, removed on exit. Needs Python 3.11+ for `mlx-audio`; this was set up and measured on an Apple M2 with 16 GB.
 
 1. Install the exact package set into a local, git-ignored environment:
 
@@ -80,7 +79,7 @@ Clones each catalogue voice from its reference clip with Qwen3-TTS 1.7B Base, so
 3. Run it offline against the local snapshot (never another revision, never a download):
 
    ```sh
-   HF_HUB_OFFLINE=1 .venv/bin/python -m local_audio --catalogue ../../assets/voices/catalogue.json \
+   HF_HUB_OFFLINE=1 .venv/bin/python -m local_audio \
      --backend qwen-mlx \
      --tts-model ~/.cache/huggingface/hub/models--mlx-community--Qwen3-TTS-12Hz-1.7B-Base-bf16/snapshots/a6eb4f68e4b056f1215157bb696209bc82a6db48
    ```
