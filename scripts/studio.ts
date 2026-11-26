@@ -4,12 +4,18 @@
  *   pnpm studio                 real providers (LLM key, Qwen3-TTS on LOCAL_AUDIO_URL)
  *   pnpm studio --stub          offline stand-in model and tone voices (no key, no audio models)
  *   pnpm studio --port 4000     the web app on another port (default 3000)
+ *   pnpm studio --prod          build once and serve the production web app (use this on a server)
+ *
+ * Without --prod the web app is Next's development server, which only serves its scripts to pages
+ * opened on this machine (localhost): opened from another address, the page loads but never
+ * becomes interactive. On a server use --prod: no such check, faster, and no development tooling
+ * exposed. Set UPLOAD_PASSKEY there, or anyone who finds the address can spend your LLM and GPU budget.
  *
  * Reads the repo's .env. Both processes get the same absolute DATA_DIR (default ./data), because
  * they run from different folders and a relative path would point them at different databases.
  * Ctrl+C stops both; if either stops on its own, the other is stopped too.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,7 +23,7 @@ import { parseArgs } from "node:util";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 if (existsSync(join(root, ".env"))) process.loadEnvFile(join(root, ".env"));
-const { values: args } = parseArgs({ options: { stub: { type: "boolean", default: false }, port: { type: "string", default: "3000" } } });
+const { values: args } = parseArgs({ options: { stub: { type: "boolean", default: false }, prod: { type: "boolean", default: false }, port: { type: "string", default: "3000" } } });
 const stub = args.stub;
 const port = Number(args.port);
 if (!/^\d+$/.test(args.port) || port < 1 || port > 65_535) {
@@ -32,7 +38,18 @@ const env = {
   ...(stub ? { GLOBAL_DAILY_TTS_CHAR_LIMIT: process.env.GLOBAL_DAILY_TTS_CHAR_LIMIT || "1000000", GLOBAL_DAILY_LLM_TOKEN_LIMIT: process.env.GLOBAL_DAILY_LLM_TOKEN_LIMIT || "10000000" } : {}),
 };
 
-console.log(`studio: ${stub ? "stub providers (tones, not real voices)" : "real providers"}; data in ${env.DATA_DIR}; open http://localhost:${port}/studio`);
+console.log(`studio: ${stub ? "stub providers (tones, not real voices)" : "real providers"}; ${args.prod ? "production build" : "development server (this machine only)"}; data in ${env.DATA_DIR}; open http://localhost:${port}/studio`);
+if (args.prod && !process.env.UPLOAD_PASSKEY?.trim()) {
+  console.warn("studio: WARNING: UPLOAD_PASSKEY is not set, so anyone who can reach this port can upload books and spend your LLM and GPU budget. Set it in .env to a long random value (e.g. openssl rand -hex 24).");
+}
+if (args.prod) {
+  console.log("studio: building the web app (a minute or two)…");
+  const built = spawnSync("pnpm", ["--filter", "@midnight-radio/web", "build"], { cwd: root, env, stdio: "inherit" });
+  if (built.status !== 0) {
+    console.error("studio: the web app did not build; see the messages above");
+    process.exit(built.status ?? 1);
+  }
+}
 
 const children: ChildProcess[] = [];
 let stopping = false;
@@ -64,4 +81,4 @@ process.on("SIGINT", () => stop(0));
 process.on("SIGTERM", () => stop(0));
 
 run("worker", ["--filter", "@midnight-radio/worker", "start"]);
-run("web", ["--filter", "@midnight-radio/web", "dev", "--port", String(port)]);
+run("web", ["--filter", "@midnight-radio/web", args.prod ? "start" : "dev", "--port", String(port)]);
