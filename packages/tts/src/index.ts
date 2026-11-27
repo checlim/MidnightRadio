@@ -7,3 +7,4 @@ export * from "./segments.js";
 export * from "./stub.js";
 export * from "./wav.js";
 export * from "./voice-designer.js";
+export * from "./sfx-client.js";

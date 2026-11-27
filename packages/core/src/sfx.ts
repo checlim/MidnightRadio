@@ -117,12 +117,15 @@ export type SfxCatalogue = z.infer<typeof SfxCatalogueSchema>;
 
 /** A Script's reference to the library that cannot be played. The message is safe to show and to feed back to the adapter. */
 export interface SfxIssue {
-  code: "unknown_id" | "wrong_kind" | "not_loopable" | "unmapped_cue" | "longer_than_asset";
+  code: "unknown_id" | "wrong_kind" | "not_loopable" | "unmapped_cue" | "longer_than_asset" | "too_short";
   id: string;
   message: string;
 }
 
 type SceneBed = z.infer<typeof SceneBedSchema>;
+
+/** The shortest `durationMs` a sound or music cue may ask for: anything shorter cannot be heard. */
+export const MIN_CUE_MS = 100;
 
 /** Index for repeated lookups; build once per catalogue. */
 export const indexSfx = (catalogue: SfxCatalogue): ReadonlyMap<string, SfxEntry> => new Map(catalogue.entries.map((e) => [e.id, e]));
@@ -173,7 +176,9 @@ export function auditScriptSfx(catalogue: SfxCatalogue, script: Script): SfxAudi
   const index = indexSfx(catalogue);
   const issues: SfxAuditIssue[] = [];
   const tooLong = (entry: SfxEntry, durationMs: number | undefined, id: string, path: string) => {
-    if (durationMs !== undefined && !entry.loopable && durationMs > entry.durationMs) {
+    if (durationMs !== undefined && durationMs < MIN_CUE_MS) {
+      issues.push({ code: "too_short", id, path, message: `"${id}" is asked for ${durationMs} ms; a cue must last at least ${MIN_CUE_MS} ms to be heard` });
+    } else if (durationMs !== undefined && !entry.loopable && durationMs > entry.durationMs) {
       issues.push({ code: "longer_than_asset", id, path, message: `"${id}" lasts ${entry.durationMs} ms and cannot loop, but ${durationMs} ms were asked for` });
     }
   };

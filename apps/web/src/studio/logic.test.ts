@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { fileProblem, shouldPoll, stateLabel, unfinishedChapters, voiceBrief, type BookView, type EpisodeView } from "./logic";
+import { cancellableChapters, fileProblem, remixableChapters, shouldPoll, stageLines, stateLabel, unfinishedChapters, voiceBrief, type BookView, type EpisodeView } from "./logic";
 
 const voice = (id: string) => ({ id, name: id.toUpperCase(), gender: "neutral", ageBands: ["adult"], description: null });
-const ep = (state: EpisodeView["state"], extra: Partial<EpisodeView> = {}): EpisodeView => ({ chapterId: "c", episodeNumber: 1, title: "I", stationId: "s", state, message: null, linesRendered: 0, linesTotal: 0, ...extra });
+const ep = (state: EpisodeView["state"], extra: Partial<EpisodeView> = {}): EpisodeView => ({ chapterId: "c", episodeNumber: 1, title: "I", stationId: "s", state, message: null, linesRendered: 0, linesTotal: 0, revision: null, soundDesigned: false, hasScript: false, job: null, ...extra });
 const book = (patch: Partial<BookView> = {}): BookView => ({
   id: "bk-0123456789abcdef",
   title: "Dracula",
@@ -50,5 +50,21 @@ describe("studio logic", () => {
     expect(shouldPoll(book({ chapters: [{ number: 1, title: "I", words: 1, episodes: [ep("queued")] }] }))).toBe(true);
     expect(shouldPoll(null)).toBe(false);
     expect(unfinishedChapters(book())).toEqual([2]);
+  });
+  it("shows each stage of a sound-designed job separately, and which chapters can be remixed or cancelled", () => {
+    const job = (state: "queued" | "running", progress: NonNullable<EpisodeView["job"]>["progress"], cancelRequested = false): EpisodeView["job"] => ({ kind: "sound-design", state, message: null, cancelRequested, soundDesign: true, progress });
+    const running = ep("ready", {
+      hasScript: true,
+      revision: 1,
+      job: job("running", { library: { state: "done", done: 4, total: 4, message: "sound library lib-1 is ready" }, script: { state: "done", done: 0, total: 0, message: "1 sound(s) added" }, speech: { state: "running", done: 3, total: 9, message: null }, mix: { state: "pending", done: 0, total: 0, message: null } }),
+    });
+    expect(stageLines(running).map((l) => l.text)).toEqual(["Sound library: done 4/4 · sound library lib-1 is ready", "Script: done · 1 sound(s) added", "Speech: working 3/9", "Mix: waiting"]);
+    expect(stageLines(ep("running"))).toEqual([]);
+    expect(stateLabel(ep("ready", { revision: 2, soundDesigned: true }))).toBe("On air (revision 2, with sound design)");
+    const b = book({ chapters: [{ number: 1, title: "I", words: 1, episodes: [running] }, { number: 2, title: "II", words: 1, episodes: [ep("not_started")] }] });
+    expect(shouldPoll(b)).toBe(true); // a remix of an episode already on air is still being made
+    expect(remixableChapters(b, new Set([1, 2]))).toEqual([1]);
+    expect(cancellableChapters(b, new Set([1, 2]))).toEqual([1]);
+    expect(cancellableChapters(book({ chapters: [{ number: 1, title: "I", words: 1, episodes: [{ ...running, job: job("running", {}, true) }] }] }), new Set([1]))).toEqual([]);
   });
 });

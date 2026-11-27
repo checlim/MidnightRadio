@@ -3,16 +3,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildCast } from "@midnight-radio/core";
-import { saveCast } from "@midnight-radio/db";
+import { saveAdaptation, saveCast, setProgress } from "@midnight-radio/db";
 import { buildEpub } from "@midnight-radio/ingest/src/test-support/build-epub.js";
-import { EPISODE_JOB, JobQueue, loadSeriesCatalogue } from "@midnight-radio/worker";
+import { EPISODE_JOB, JobQueue, SOUND_DESIGN_JOB, loadSeriesCatalogue } from "@midnight-radio/worker";
 
 /** A book cast from the series voices (as before per-book voices), so the editor offers those. */
 const SERIES = loadSeriesCatalogue(join(import.meta.dirname, "../../../.."));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generationShown, loadWebConfig } from "./config";
 import { PASSKEY_HEADER, resetGuards, sharedDb } from "./guard";
-import { bookRoute, generateRoute, uploadRoute } from "./routes";
+import { bookRoute, cancelRoute, generateRoute, soundDesignRoute, uploadRoute } from "./routes";
 
 const FILLER =
   "The night was cold and the road was long. The carriage climbed between dark pines while the wind moved in the branches above. Far below, a river ran black under the moon, and the driver said nothing at all. Every mile the hills grew steeper and the sky grew lower, until the stars were hidden and only the lamps showed the way.";
@@ -70,7 +70,11 @@ describe("generation routes", () => {
   });
 
   it("with generation disabled, every route answers 404 and touches nothing", async () => {
-    for (const r of await all()) {
+    const more = [
+      await soundDesignRoute(post(`/api/books/${ID}/sound-design`, JSON.stringify({ chapters: [1] })), ctx(ID)),
+      await cancelRoute(post(`/api/books/${ID}/cancel`, JSON.stringify({ chapters: [1] })), ctx(ID)),
+    ];
+    for (const r of [...(await all()), ...more]) {
       expect(r.status).toBe(404);
       expect(await r.json()).toEqual({ error: "Generation is not available on this site." });
     }
@@ -168,5 +172,48 @@ describe("generation routes", () => {
       expect((await bookRoute(get("/api/books/../../etc"), ctx("../../etc"))).status).toBe(404);
     });
 
+    it("queues sound design with the job only when asked, remixes saved Scripts, reports stage progress, and cancels", async () => {
+      const book = await (await upload()).json();
+      const db = sharedDb(loadWebConfig());
+      const queue = new JobQueue(db);
+      const [ch1, ch2] = book.chapters.map((c: { episodes: { chapterId: string }[] }) => c.episodes[0]!.chapterId) as [string, string];
+      const gen = (body: unknown) => generateRoute(post(`/api/books/${book.id}/generate`, JSON.stringify(body)), ctx(book.id));
+      const remix = (body: unknown) => soundDesignRoute(post(`/api/books/${book.id}/sound-design`, JSON.stringify(body)), ctx(book.id));
+      const cancel = (body: unknown) => cancelRoute(post(`/api/books/${book.id}/cancel`, JSON.stringify(body)), ctx(book.id));
+      const view = async () => (await (await bookRoute(get(`/api/books/${book.id}`), ctx(book.id))).json()) as { chapters: { episodes: { job: { kind: string; state: string; soundDesign: boolean; cancelRequested: boolean; progress: Record<string, unknown> } | null; hasScript: boolean }[] }[] };
+
+      expect((await gen({ chapters: [1], charBudget: 1000, soundDesign: "yes" })).status).toBe(400);
+      expect((await gen({ chapters: [1], charBudget: 1000, soundDesign: true })).status).toBe(202);
+      expect((await gen({ chapters: [2], charBudget: 1000 })).status).toBe(202);
+      const jobs = db.prepare("SELECT ref_id AS ref, options_json AS options FROM jobs ORDER BY ref_id").all() as { ref: string; options: string | null }[];
+      expect(Object.fromEntries(jobs.map((j) => [j.ref, j.options]))).toEqual({ [ch1]: '{"soundDesign":true}', [ch2]: null }); // without the option: the original flow
+      const job1 = db.prepare("SELECT id FROM jobs WHERE ref_id = ?").get(ch1) as { id: string };
+      setProgress(db, job1.id, "library", { state: "running", done: 2, total: 6, message: "generating foley" }, 1);
+      let v = await view();
+      expect(v.chapters[0]!.episodes[0]!.job).toMatchObject({ kind: "episode", state: "queued", soundDesign: true, progress: { library: { state: "running", done: 2, total: 6, message: "generating foley" } } });
+      expect(v.chapters[1]!.episodes[0]!.job).toMatchObject({ soundDesign: false, progress: {} });
+
+      resetGuards(); // more writes than one client may make in ten minutes
+      // A remix needs a saved Script and no generation running for that episode.
+      expect((await remix({ chapters: [1] })).status).toBe(422);
+      expect(await (await cancel({ chapters: [1, 2] })).json()).toEqual({ cancelled: [ch1, ch2] });
+      v = await view();
+      expect(v.chapters.map((c) => c.episodes[0]!.job!.state)).toEqual(["failed", "failed"]);
+      saveAdaptation(db, ch1, { status: "adapted", providerId: "p", attempts: [{ attempt: 1, script: { a: 1 }, report: { ok: true }, issues: [], fidelity: 1, status: "valid", requestId: undefined }] });
+      expect((await view()).chapters[0]!.episodes[0]!.hasScript).toBe(true);
+      expect((await remix({ chapters: [1, 2] })).status).toBe(422); // chapter 2 has no Script yet
+      const r = await remix({ chapters: [1] });
+      expect([r.status, await r.json()]).toEqual([202, { queued: [ch1] }]);
+      expect(db.prepare("SELECT kind, state, options_json AS options FROM jobs WHERE ref_id = ? AND kind = ?").get(ch1, SOUND_DESIGN_JOB)).toEqual({ kind: SOUND_DESIGN_JOB, state: "queued", options: null });
+      expect((await view()).chapters[0]!.episodes[0]!.job).toMatchObject({ kind: SOUND_DESIGN_JOB, state: "queued", soundDesign: true });
+      resetGuards();
+      // A running job is asked to stop, and stops at its next heartbeat.
+      const running = queue.claim([SOUND_DESIGN_JOB])!;
+      expect(await (await cancel({ chapters: [1] })).json()).toEqual({ cancelled: [ch1] });
+      expect(queue.get(running.job.id)).toMatchObject({ state: "running", cancelRequested: true });
+      expect((await view()).chapters[0]!.episodes[0]!.job!.cancelRequested).toBe(true);
+      expect((await remix({ chapters: [] })).status).toBe(400);
+      expect((await cancel({ chapters: [9] })).status).toBe(422);
+    });
   });
 });

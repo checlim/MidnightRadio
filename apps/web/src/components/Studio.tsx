@@ -1,11 +1,13 @@
 "use client";
 import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
-import { fileProblem, shouldPoll, stateLabel, unfinishedChapters, voiceBrief, type BookView } from "../studio/logic";
+import { cancellableChapters, fileProblem, remixableChapters, shouldPoll, stageLines, stateLabel, unfinishedChapters, voiceBrief, type BookView } from "../studio/logic";
 
 /**
  * The studio (Req 1.1, 8.2, 9.1): upload an EPUB you have the right to adapt, choose the chapters
  * and the speech budget, and watch the episodes being made. Casting and voices are automatic; the
- * cast is shown, not edited.
+ * cast is shown, not edited. With "Sound design" the studio prepares the sound library first and
+ * places effects and backgrounds from it; "Add sound design" does the same for episodes that are
+ * already made, without re-writing or re-recording their lines. Each stage reports its progress.
  * Only rendered when generation is enabled; the server refuses every request otherwise.
  */
 
@@ -30,6 +32,7 @@ export function Studio({ passkeyRequired, initialBookId }: { passkeyRequired: bo
   const [chosen, setChosen] = useState<Set<number>>(new Set());
   const [budget, setBudget] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [soundDesign, setSoundDesign] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const show = useCallback((b: BookView, resetChoices: boolean) => {
@@ -88,8 +91,25 @@ export function Studio({ passkeyRequired, initialBookId }: { passkeyRequired: bo
     setNotice(null);
     setBusy("Sending to the studio…");
     try {
-      const r = await call<{ queued: string[] }>(`/api/books/${book.id}/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chapters: [...chosen], charBudget: budget }) }, passkey);
+      const body = { chapters: [...chosen], charBudget: budget, ...(soundDesign ? { soundDesign: true } : {}) };
+      const r = await call<{ queued: string[] }>(`/api/books/${book.id}/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, passkey);
       setNotice(r.queued.length > 0 ? `${r.queued.length} episode(s) queued. They appear on the radio when ready.` : "Those episodes are already on air.");
+      await refresh(book.id);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function act(path: "sound-design" | "cancel", chapters: number[], done: (n: number) => string) {
+    if (!book) return;
+    setError(null);
+    setNotice(null);
+    setBusy(path === "cancel" ? "Stopping…" : "Sending to the studio…");
+    try {
+      const r = await call<{ queued?: string[]; cancelled?: string[] }>(`/api/books/${book.id}/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chapters }) }, passkey);
+      setNotice(done((r.queued ?? r.cancelled ?? []).length));
       await refresh(book.id);
     } catch (err) {
       setError((err as Error).message);
@@ -202,15 +222,49 @@ export function Studio({ passkeyRequired, initialBookId }: { passkeyRequired: bo
                       Episode {e.episodeNumber}
                       {c.episodes.length > 1 ? ` (${e.title})` : ""}: {stateLabel(e)}
                       {e.message ? <span className="muted"> · {e.message}</span> : null}
+                      {e.job?.kind === "sound-design" && e.job.state !== "done" ? (
+                        <span className="muted">
+                          {" "}
+                          · adding sound design: {e.job.state === "failed" ? `failed${e.job.message ? ` (${e.job.message})` : ""}; the episode on air is unchanged` : e.job.cancelRequested ? "stopping" : e.job.state}
+                        </span>
+                      ) : null}
                     </p>
                   ))}
+                  {c.episodes.flatMap((e) =>
+                    stageLines(e).length > 0 && (e.job?.state === "queued" || e.job?.state === "running" || e.job?.state === "failed") ? [
+                      <ul key={`${e.chapterId}-stages`} className="stages" aria-label={`Episode ${e.episodeNumber} progress`}>
+                        {stageLines(e).map((l) => (
+                          <li key={l.stage} className={`stage stage-${l.state}`}>
+                            {l.text}
+                          </li>
+                        ))}
+                      </ul>,
+                    ] : [],
+                  )}
                 </li>
               ))}
             </ol>
           </fieldset>
-          <button type="submit" className="brass-button" disabled={busy !== null || chosen.size === 0}>
-            Make {chosen.size === 1 ? "this episode" : `${chosen.size} chapters`}
-          </button>
+          <label className="check">
+            <input type="checkbox" checked={soundDesign} onChange={(e) => setSoundDesign(e.target.checked)} /> Sound design: prepare the sound library first, then place effects and backgrounds the text calls for
+          </label>
+          <div className="studio-actions">
+            <button type="submit" className="brass-button" disabled={busy !== null || chosen.size === 0}>
+              Make {chosen.size === 1 ? "this episode" : `${chosen.size} chapters`}
+            </button>
+            <button
+              type="button"
+              className="brass-button"
+              disabled={busy !== null || remixableChapters(book, chosen).length === 0}
+              title="Add effects and backgrounds to episodes already written, and remix them; their lines are not re-written or re-recorded"
+              onClick={() => void act("sound-design", remixableChapters(book, chosen), (n) => `${n} episode(s) queued for sound design. The episode on air stays until the new mix has passed its checks.`)}
+            >
+              Add sound design
+            </button>
+            <button type="button" className="brass-button" disabled={busy !== null || cancellableChapters(book, chosen).length === 0} onClick={() => void act("cancel", cancellableChapters(book, chosen), (n) => (n > 0 ? `Stopping ${n} job(s). Finished work is kept.` : "Nothing to stop."))}>
+              Cancel
+            </button>
+          </div>
           <p className="muted">
             Finished episodes appear as stations on the <a href="/">radio</a>.
           </p>

@@ -43,6 +43,21 @@ export function stubAdaptation(user: string): AdaptedScript {
   };
 }
 
+/**
+ * Sound design in stub mode: the first effect in the library before the first segment, and the
+ * first bed under the whole first scene, each with the chapter's opening words as evidence (which
+ * are in the chapter, so they pass the evidence check). Nothing else is proposed.
+ */
+export function stubSoundDesign(user: string): { cues: unknown[]; ambience: unknown[] } {
+  const evidence = chapterText(user).split(/\s+/).filter(Boolean).slice(0, 4).join(" ");
+  const sfx = /use the id as sfxId\): ([a-z][a-z0-9_]+) \(/.exec(user)?.[1];
+  const bed = /kind as shown\): sfx:([a-z][a-z0-9_]+)/.exec(user)?.[1];
+  return {
+    cues: sfx ? [{ scene: 0, beforeSegment: 0, sfxId: sfx, evidence }] : [],
+    ambience: bed ? [{ scene: 0, fromSegment: 0, id: bed, gainDb: -18, evidence }] : [],
+  };
+}
+
 export function stubLlm(): StubLlmProvider {
   return new StubLlmProvider((req: LlmRequest) => {
     if (req.jsonSchema.name === "voice_briefs") {
@@ -53,6 +68,7 @@ export function stubLlm(): StubLlmProvider {
     if (req.jsonSchema.name === "chunk_characters") {
       return JSON.stringify({ characters: [{ name: STUB_CHARACTER, aliases: [], genderPresentation: "unstated", ageBand: "adult", description: "Speaks every line in stub mode.", speaks: true }] });
     }
+    if (req.jsonSchema.name === "sound_design") return JSON.stringify(stubSoundDesign(req.user));
     return JSON.stringify(stubAdaptation(req.user));
   });
 }

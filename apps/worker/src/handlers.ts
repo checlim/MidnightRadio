@@ -2,12 +2,14 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { ClonableCatalogue, SfxCatalogue } from "@midnight-radio/core";
-import type { BudgetLedger } from "@midnight-radio/db";
+import { bindJobSnapshot, setProgress, type BudgetLedger } from "@midnight-radio/db";
 import { ingestEpub } from "@midnight-radio/ingest";
 import type { LlmProvider } from "@midnight-radio/llm";
 import type { FfmpegOptions } from "@midnight-radio/mix";
-import type { TtsProvider, VoiceDesignPin, VoiceDesigner } from "@midnight-radio/tts";
-import { BudgetStopError, GenerateError, castBook, produceEpisode } from "./generate/pipeline.js";
+import type { SfxClient, TtsProvider, VoiceDesignPin, VoiceDesigner } from "@midnight-radio/tts";
+import { LibraryError, prepareLibrary } from "./generate/library.js";
+import { BudgetStopError, GenerateError, castBook, produceEpisode, type EpisodeResult } from "./generate/pipeline.js";
+import { produceSoundDesigned } from "./generate/sound-episode.js";
 import { planBook, sha256Hex } from "./generate/plan.js";
 import { PermanentJobError, isFatalJobError } from "./jobs/errors.js";
 import type { JobQueue } from "./jobs/queue.js";
@@ -43,12 +45,33 @@ export interface GenerationServices {
   /** Uploaded EPUBs, one per Book: `<uploadsDir>/<bookId>.epub`. */
   uploadsDir: string;
   log: (message: string, fields?: LogFields) => void;
+  /** The shared sound library that sound-designed jobs prepare and mix from. */
+  library: SoundLibraryServices;
   ff?: FfmpegOptions;
   delay?: (ms: number, signal?: AbortSignal) => Promise<unknown>;
 }
 
-/** Job kind that produces one episode; its ref is the `chapters.id`. */
+export interface SoundLibraryServices {
+  /** `<DATA_DIR>/sfx-library`. */
+  root: string;
+  /** `assets/sfx`. */
+  sourceDir: string;
+  /** Operator-downloaded CC0 music (`music-candidates/`), used only if the committed library lacks a music cue. */
+  musicDir: string;
+  /** Null when SFX_SERVICE_URL is not set. */
+  connect: (() => Promise<SfxClient>) | null;
+  takesPerCue?: number;
+  /** Tests only. */
+  allowFakeModel?: boolean;
+}
+
+/** Job kind that produces one episode; its ref is the `chapters.id`. Options: `{ soundDesign: true }` for the sound-designed flow; none for the original flow. */
 export const EPISODE_JOB = "episode";
+/** Job kind that adds sound design to a saved episode and remixes it; its ref is the `chapters.id`. */
+export const SOUND_DESIGN_JOB = "sound-design";
+
+/** Whether a job runs the sound-designed flow. Jobs without options (queued before it existed) run as before. */
+export const wantsSoundDesign = (options: Record<string, unknown> | null): boolean => options?.soundDesign === true;
 
 export const uploadPathFor = (uploadsDir: string, bookId: string) => join(uploadsDir, `${bookId}.epub`);
 
@@ -59,7 +82,7 @@ export const uploadPathFor = (uploadsDir: string, bookId: string) => join(upload
  * an adaptation that failed its repairs, a changed upload) fails it with the reason; anything else
  * (e.g. the local audio service is down) is retried.
  */
-function episodeHandler(deps: HandlerDeps, services: GenerationServices): JobHandler {
+function episodeHandler(deps: HandlerDeps, services: GenerationServices, mode: "episode" | "remix"): JobHandler {
   return async (ctx) => {
     const row = deps.db
       .prepare("SELECT b.id AS bookId, b.source_hash AS sourceHash FROM chapters c JOIN books b ON b.id = c.book_id WHERE c.id = ?")
@@ -98,13 +121,40 @@ function episodeHandler(deps: HandlerDeps, services: GenerationServices): JobHan
       ...(services.ff ? { ff: services.ff } : {}),
       ...(services.delay ? { delay: services.delay } : {}),
     };
-    let result;
+    const progress = (stage: Parameters<typeof setProgress>[2], p: Parameters<typeof setProgress>[3]) => ctx.publish((db) => setProgress(db, ctx.job.id, stage, p, Date.now()));
+    const soundDesigned = mode === "remix" || wantsSoundDesign(ctx.job.options);
+    let result: EpisodeResult;
     try {
+      if (soundDesigned) progress("library", { state: "pending" });
       const cast = await castBook(plan, pipeline);
-      result = await produceEpisode(plan, episode, cast, pipeline);
+      if (!soundDesigned) result = await produceEpisode(plan, episode, cast, pipeline);
+      else {
+        const lib = services.library;
+        result = await produceSoundDesigned(plan, episode, cast, pipeline, {
+          mode: mode === "remix" ? "remix" : "generate",
+          progress,
+          library: () =>
+            prepareLibrary({
+              db: deps.db,
+              root: lib.root,
+              sourceDir: lib.sourceDir,
+              musicDir: lib.musicDir,
+              connect: lib.connect,
+              holder: ctx.job.id,
+              bind: () => ctx.publish((db) => bindJobSnapshot(db, ctx.job.id)),
+              log: pipeline.log,
+              progress: (p) => progress("library", p),
+              signal: ctx.signal,
+              fence: ctx.assertLease,
+              ...(lib.takesPerCue ? { takesPerCue: lib.takesPerCue } : {}),
+              ...(lib.allowFakeModel ? { allowFakeModel: true } : {}),
+              ...(services.ff ? { ff: services.ff } : {}),
+            }),
+        });
+      }
     } catch (err) {
       if (err instanceof BudgetStopError) throw err;
-      if (err instanceof GenerateError) throw new PermanentJobError(err.message);
+      if (err instanceof GenerateError || err instanceof LibraryError) throw new PermanentJobError(err.message);
       throw err;
     }
     if (result.status === "failed") {
@@ -120,5 +170,5 @@ function episodeHandler(deps: HandlerDeps, services: GenerationServices): JobHan
  */
 export function createHandlers(deps: HandlerDeps): Record<string, JobHandler> {
   if (!deps.generation) return {};
-  return { [EPISODE_JOB]: episodeHandler(deps, deps.generation) };
+  return { [EPISODE_JOB]: episodeHandler(deps, deps.generation, "episode"), [SOUND_DESIGN_JOB]: episodeHandler(deps, deps.generation, "remix") };
 }

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
-import { LeaseLostError, OverBudgetError, PermanentJobError } from "./errors.js";
+import { JobCancelledError, LeaseLostError, OverBudgetError, PermanentJobError } from "./errors.js";
 import type { Job, JobQueue, Lease } from "./queue.js";
 
 export interface JobContext {
@@ -49,6 +49,7 @@ export async function runOnce(opts: RunnerOptions): Promise<boolean> {
     // lease expires, the next successful heartbeat returns false and the job is aborted.
     try {
       if (!queue.heartbeat(lease)) ctrl.abort(new LeaseLostError(job.id));
+      else if (queue.cancellationRequested(job.id)) ctrl.abort(new JobCancelledError(job.id));
     } catch (err) {
       report(opts, err, job);
     }
@@ -66,7 +67,7 @@ export async function runOnce(opts: RunnerOptions): Promise<boolean> {
     });
     queue.complete(lease); // Fenced: throws LeaseLostError if ownership was lost meanwhile.
   } catch (err) {
-    settleFailure(opts, lease, job, err);
+    settleFailure(opts, lease, job, ctrl.signal.reason instanceof JobCancelledError ? ctrl.signal.reason : err);
   } finally {
     clearInterval(beat);
     opts.signal?.removeEventListener("abort", onShutdown);
@@ -78,6 +79,7 @@ function settleFailure(opts: RunnerOptions, lease: Lease, job: Job, err: unknown
   const { queue } = opts;
   try {
     if (err instanceof LeaseLostError || !queue.holds(lease)) return; // Another worker owns it now.
+    if (err instanceof JobCancelledError) return queue.cancel(lease);
     if (opts.signal?.aborted) return queue.release(lease);
     report(opts, err, job);
     if (err instanceof OverBudgetError) return queue.pauseOverBudget(lease, err.message);

@@ -64,17 +64,29 @@ export interface Loudness {
   truePeakDbtp: number;
 }
 
-/** Integrated loudness and true peak of a file, as decoded (EBU R128, `ebur128=peak=true`). */
-export async function measureLoudness(path: string, opts: FfmpegOptions = {}): Promise<Loudness> {
-  const r = await runFfmpeg({ inputs: [{ path }], filter: { type: "audio", graph: "ebur128=peak=true:framelog=quiet" }, output: null, logLevel: "info" }, opts);
-  const summary = r.log.slice(r.log.lastIndexOf("Summary:"));
-  const i = /I:\s+(-?[\d.]+|-inf) LUFS/.exec(summary);
-  const p = /Peak:\s+(-?[\d.]+|-inf) dBFS/.exec(summary);
+/**
+ * Read integrated loudness and true peak from ffmpeg's ebur128 log. The summary block has the same
+ * layout in FFmpeg 4.4.2 and 9.x; the last `Summary:` wins, so earlier text cannot be mistaken for it.
+ */
+export function parseEbur128Summary(log: string): Loudness {
+  const at = log.lastIndexOf("Summary:");
+  if (at < 0) throw new Error("ebur128 printed no summary");
+  const summary = log.slice(at);
+  const i = /\bI:\s+(-?\d+(?:\.\d+)?|-?inf)\s+LUFS/.exec(summary);
+  const p = /\bPeak:\s+(-?\d+(?:\.\d+)?|-?inf)\s+dBFS/.exec(summary);
   if (!i || !p) throw new Error("ebur128 printed no summary");
-  const num = (s: string) => (s === "-inf" ? -Infinity : Number(s));
+  const num = (s: string) => (s === "-inf" ? -Infinity : s === "inf" ? Infinity : Number(s));
   return { integratedLufs: num(i[1]!), truePeakDbtp: num(p[1]!) };
 }
-
+/**
+ * Integrated loudness and true peak of a file, as decoded (EBU R128). `framelog=verbose` keeps the
+ * per-frame lines below the `info` log level, so only the summary is printed. (`framelog=quiet` does
+ * not exist in FFmpeg 4.4.2, the production version; `peak=true` alone floods the log at `info`.)
+ */
+export async function measureLoudness(path: string, opts: FfmpegOptions = {}): Promise<Loudness> {
+  const r = await runFfmpeg({ inputs: [{ path }], filter: { type: "audio", graph: "ebur128=peak=true:framelog=verbose" }, output: null, logLevel: "info" }, opts);
+  return parseEbur128Summary(r.log);
+}
 export interface Mp3Tags {
   title: string;
   /** Series name, e.g. "Midnight Radio". */

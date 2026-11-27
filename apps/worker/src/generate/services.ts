@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SfxCatalogueSchema, VoiceCatalogueSchema, catalogueHash, requireClonable, type ClonableCatalogue } from "@midnight-radio/core";
 import { createOpenAiCompatibleProvider, loadLlmConfig, loadStyleGuide } from "@midnight-radio/llm";
-import { QwenTtsProvider, QwenVoiceDesigner, StubProvider, StubVoiceDesigner, VoiceDesignPinSchema, loadQwenConfig, type TtsProvider, type VoiceDesignPin, type VoiceDesigner } from "@midnight-radio/tts";
+import { QwenTtsProvider, QwenVoiceDesigner, SfxClient, StubProvider, StubVoiceDesigner, VoiceDesignPinSchema, loadQwenConfig, loadSfxConfig, type TtsProvider, type VoiceDesignPin, type VoiceDesigner } from "@midnight-radio/tts";
 import type { WorkerConfig } from "../config.js";
 import type { GenerationServices } from "../handlers.js";
 import { stubLlm } from "./stub-llm.js";
@@ -76,6 +76,9 @@ export function createGenerationServices(env: Record<string, string | undefined>
   const series = loadSeriesCatalogue(root);
   const designPin = loadDesignPin(root);
   const connectors = createConnectors(env, config.stubProviders, designPin);
+  // The sound-effect server is used only to build the shared library for sound-designed jobs; with
+  // no SFX_SERVICE_URL those jobs use the library already built, or fail saying what to set.
+  const sfxService = loadSfxConfig(env);
   let llm = null;
   if (config.stubProviders) llm = stubLlm();
   else {
@@ -96,6 +99,12 @@ export function createGenerationServices(env: Record<string, string | undefined>
     cacheDir: config.renderCacheDir,
     broadcastDir: config.broadcastDir,
     uploadsDir: join(config.dataDir, "uploads"),
+    library: {
+      root: join(config.dataDir, "sfx-library"),
+      sourceDir: sfxDir,
+      musicDir: join(root, "music-candidates"),
+      connect: sfxService ? () => SfxClient.connect(sfxService) : null,
+    },
     log,
   };
 }

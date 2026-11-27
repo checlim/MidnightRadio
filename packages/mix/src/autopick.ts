@@ -11,8 +11,11 @@ import { findClicks } from "./assemble-sfx.js";
  * `assets/sfx/autopick.json`, and `picks.json` is written from the winners.
  *
  * A take is out if it misses its target length by more than 0.1 s, clips (more than 0.1 % of
- * samples at full scale), is near-silent (RMS below −45 dBFS), or (a one-off sound) is audible
- * for less than 15 % of its length, or (a bed) drops out for a second or more. The rest are
+ * samples at full scale), is near-silent (RMS below −45 dBFS), or (a bed) drops out for a second
+ * or more. A one-off sound must be audible for at least 15 % of its length, unless it is a clear
+ * transient: one unbroken audible stretch of at least 100 ms, a peak of −12 dBFS or louder, and
+ * no more than 0.5 s of silence before it. A match strike or a single knock is short by nature,
+ * so its share of a 3 s file alone says nothing about its quality. The rest are
  * ranked by a score: fewer sudden clicks, a level near −20 dBFS, a prompt start for one-off
  * sounds, and a steady level for beds. Ties go to the lowest take number. Ears may disagree;
  * the record says why each take won, so a person can override it in `picks.json`.
@@ -28,6 +31,8 @@ export interface TakeMeasure {
   clippedFraction: number;
   /** Share of 100 ms windows louder than −45 dBFS. */
   activeFraction: number;
+  /** Longest unbroken run of 10 ms windows louder than −45 dBFS, in seconds. */
+  longestActiveS: number;
   /** Seconds before the sound first rises above −45 dBFS. */
   leadSilenceS: number;
   /** Longest run below −50 dBFS, in seconds. */
@@ -84,6 +89,12 @@ export function measureTake(take: number, samples: Int16Array, rate: number): Ta
     run = d < -50 ? run + 1 : 0;
     longest = Math.max(longest, run);
   }
+  let longestActive = 0;
+  let activeRun = 0;
+  for (const d of windowsDb(samples, rate, 10)) {
+    activeRun = d > -45 ? activeRun + 1 : 0;
+    longestActive = Math.max(longestActive, activeRun);
+  }
   const w500 = windowsDb(samples, rate, 500).filter((d) => Number.isFinite(d));
   const mean = w500.reduce((a, b) => a + b, 0) / Math.max(1, w500.length);
   const spread = Math.sqrt(w500.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, w500.length));
@@ -94,6 +105,7 @@ export function measureTake(take: number, samples: Int16Array, rate: number): Ta
     peakDb: round(db(peak / 32768)),
     clippedFraction: round(clipped / Math.max(1, samples.length), 5),
     activeFraction: round(w100.filter((d) => d > -45).length / Math.max(1, w100.length), 3),
+    longestActiveS: round(longestActive * 0.01, 2),
     leadSilenceS: firstActive === -1 ? round(samples.length / rate, 2) : round(firstActive * 0.1, 2),
     longestDropoutS: round(longest * 0.1, 2),
     levelSpreadDb: round(spread),
@@ -101,13 +113,19 @@ export function measureTake(take: number, samples: Int16Array, rate: number): Ta
   };
 }
 
+/** A one-off sound mostly silence is still fine if it is one clear, prompt, strong transient. */
+export const TRANSIENT_MIN_S = 0.1;
+export const TRANSIENT_PEAK_DB = -12;
+export const TRANSIENT_MAX_LEAD_S = 0.5;
+
 /** Accept or reject a take for its cue, and score it if accepted. Pure. */
 export function judgeTake(m: TakeMeasure, cue: { durationSec: number; loopable: boolean }): TakeVerdict {
   const reject = (why: string): TakeVerdict => ({ ...m, rejected: why, score: null });
   if (Math.abs(m.durationS - cue.durationSec) > 0.1) return reject(`${m.durationS} s long, not ${cue.durationSec} s`);
   if (m.clippedFraction > 0.001) return reject(`clips (${(m.clippedFraction * 100).toFixed(2)} % of samples at full scale)`);
   if (!(m.rmsDb >= -45)) return reject(`nearly silent (${m.rmsDb} dBFS)`);
-  if (!cue.loopable && m.activeFraction < 0.15) return reject(`audible for only ${Math.round(m.activeFraction * 100)} % of its length`);
+  const transient = m.longestActiveS >= TRANSIENT_MIN_S && m.peakDb >= TRANSIENT_PEAK_DB && m.leadSilenceS <= TRANSIENT_MAX_LEAD_S;
+  if (!cue.loopable && m.activeFraction < 0.15 && !transient) return reject(`audible for only ${Math.round(m.activeFraction * 100)} % of its length`);
   if (cue.loopable && m.longestDropoutS >= 1) return reject(`the bed drops out for ${m.longestDropoutS} s`);
   let score = 100 - 10 * m.clicks - 0.5 * Math.abs(m.rmsDb + 20);
   score -= cue.loopable ? 2 * m.levelSpreadDb : 5 * Math.min(m.leadSilenceS, 4);
@@ -150,7 +168,7 @@ export async function autopick(sfxDir: string, candidatesDir: string): Promise<{
         const { samples, rate } = readPcm16(new Uint8Array(await readFile(join(candidatesDir, cue.id, t.file))));
         verdict = judgeTake(measureTake(Number(n), samples, rate), cue);
       } catch (err) {
-        verdict = { take: Number(n), durationS: 0, rmsDb: -Infinity, peakDb: -Infinity, clippedFraction: 0, activeFraction: 0, leadSilenceS: 0, longestDropoutS: 0, levelSpreadDb: 0, clicks: 0, rejected: `unreadable (${(err as Error).message})`, score: null };
+        verdict = { take: Number(n), durationS: 0, rmsDb: -Infinity, peakDb: -Infinity, clippedFraction: 0, activeFraction: 0, longestActiveS: 0, leadSilenceS: 0, longestDropoutS: 0, levelSpreadDb: 0, clicks: 0, rejected: `unreadable (${(err as Error).message})`, score: null };
       }
       verdicts.push(verdict);
     }

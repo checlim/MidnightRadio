@@ -11,3 +11,4 @@ export * from "./voice.js";
 export * from "./stations.js";
 export * from "./book-voices.js";
 export * from "./model-json.js";
+export * from "./sound-design.js";

@@ -102,8 +102,8 @@ function inTransaction<T>(db: DatabaseSync, fn: (db: DatabaseSync) => T): T {
     throw err;
   }
 }
-const publishOf = (deps: GenerateDeps) => deps.publish ?? (<T>(fn: (db: DatabaseSync) => T) => inTransaction(deps.db, fn));
-const jobFields = (deps: GenerateDeps) => ({ ...(deps.jobId ? { jobId: deps.jobId } : {}), ...(deps.fence ? { fence: deps.fence } : {}), ...(deps.signal ? { signal: deps.signal } : {}) });
+export const publishOf = (deps: GenerateDeps) => deps.publish ?? (<T>(fn: (db: DatabaseSync) => T) => inTransaction(deps.db, fn));
+export const jobFields = (deps: GenerateDeps) => ({ ...(deps.jobId ? { jobId: deps.jobId } : {}), ...(deps.fence ? { fence: deps.fence } : {}), ...(deps.signal ? { signal: deps.signal } : {}) });
 
 /** Store the book and every adaptation unit, once. Re-running is a no-op apart from the budget. */
 export function storeBook(db: DatabaseSync, plan: BookPlan, charBudget: number, now = Date.now()): void {
@@ -148,14 +148,17 @@ export function needsLlm(db: DatabaseSync, plan: BookPlan, opts: GenerateOptions
   return selected(plan, opts).some((e) => !loadValidScript(db, e.chapterId));
 }
 
-function finishedEpisode(db: DatabaseSync, chapterId: string, broadcastDir: string, stationId: string): { durationMs: number } | null {
-  const row = db.prepare("SELECT duration_ms AS durationMs, stale FROM episodes WHERE chapter_id = ?").get(chapterId) as { durationMs: number; stale: number } | undefined;
+export function finishedEpisode(db: DatabaseSync, chapterId: string, broadcastDir: string, stationId: string): { durationMs: number } | null {
+  const row = db
+    .prepare("SELECT e.duration_ms AS durationMs, e.stale, r.dir AS revisionDir FROM episodes e LEFT JOIN episode_revisions r ON r.id = e.revision_id WHERE e.chapter_id = ?")
+    .get(chapterId) as { durationMs: number; stale: number; revisionDir: string | null } | undefined;
   if (!row || row.stale !== 0) return null;
-  const dir = join(broadcastDir, "episodes", stationId);
+  // A sound-designed episode lives in its revision's folder; a legacy one in the station folder.
+  const dir = row.revisionDir ?? join(broadcastDir, "episodes", stationId);
   return ["episode.mp3", "episode-am.mp3", "episode.vtt"].every((f) => existsSync(join(dir, f))) ? { durationMs: Number(row.durationMs) } : null;
 }
 
-const stopOn = (err: unknown): never => {
+export const stopOn = (err: unknown): never => {
   if (err instanceof OverBudgetError) throw new BudgetStopError(`${err.message} Raise the limit in .env (GLOBAL_DAILY_LLM_TOKEN_LIMIT, GLOBAL_DAILY_TTS_CHAR_LIMIT or BOOK_TTS_CHAR_LIMIT) or wait for the next UTC day, then run again; finished work is kept`);
   if (err instanceof LlmError && !err.retryable) throw new GenerateError(`the LLM refused the request: ${err.message}. Check LLM_API_KEY, LLM_MODEL and LLM_BASE_URL`);
   throw err;
@@ -236,9 +239,14 @@ export async function castBook(plan: BookPlan, deps: GenerateDeps): Promise<Stor
   return cast;
 }
 
-async function scriptFor(plan: BookPlan, e: PlannedEpisode, cast: StoredCast, deps: GenerateDeps): Promise<{ script: Script; scriptId: string } | { failed: string }> {
-  const stored = loadValidScript(deps.db, e.chapterId);
-  if (stored) return { script: ScriptSchema.parse(stored.script), scriptId: stored.id };
+/** The sound library a Script is written against: the boot catalogue (legacy jobs) or a job's snapshot. */
+export interface ScriptLibrary {
+  catalogue: SfxCatalogue;
+  snapshotId: string | null;
+}
+
+/** Adapt the chapter (with repair) and store the attempts. */
+export async function adaptEpisode(plan: BookPlan, e: PlannedEpisode, cast: StoredCast, deps: GenerateDeps, lib: ScriptLibrary = { catalogue: deps.sfx, snapshotId: null }): Promise<{ script: Script; scriptId: string } | { failed: string }> {
   if (!deps.llm) throw new GenerateError(`episode ${e.episodeNumber} has no valid Script yet and no LLM is configured`);
   deps.log(`episode ${e.episodeNumber}: adapting "${e.title}" (${e.part.wordCount} words)`);
   const outcome = await adaptWithRepair({
@@ -251,10 +259,10 @@ async function scriptFor(plan: BookPlan, e: PlannedEpisode, cast: StoredCast, de
       chapter: { idx: e.chapter.idx, title: e.title, part: e.part.part, partCount: e.part.partCount, canonicalText: e.part.canonicalText },
       episodeNumber: e.episodeNumber,
       cast: promptCast(cast),
-      sfx: deps.sfx,
+      sfx: lib.catalogue,
       styleGuide: deps.styleGuide,
     },
-    validation: { sourceText: e.part.sourceText, canonicalText: e.part.canonicalText, quoteParse: e.quoteParse, quotes: e.quotes, cast: validationCast(cast), sfx: deps.sfx },
+    validation: { sourceText: e.part.sourceText, canonicalText: e.part.canonicalText, quoteParse: e.quoteParse, quotes: e.quotes, cast: validationCast(cast), sfx: lib.catalogue },
     ...jobFields(deps),
     ...(deps.delay ? { delay: deps.delay } : {}),
   }).catch(stopOn);
@@ -264,6 +272,7 @@ async function scriptFor(plan: BookPlan, e: PlannedEpisode, cast: StoredCast, de
       ...(outcome.status === "failed" ? { message: outcome.message } : {}),
       providerId: outcome.providerId,
       attempts: outcome.attempts.map(storedAttempt),
+      ...(lib.snapshotId ? { sfxSnapshotId: lib.snapshotId } : {}),
     }),
   );
   if (outcome.status === "failed") return { failed: `adaptation failed (${outcome.reason}): ${outcome.message}` };
@@ -271,12 +280,18 @@ async function scriptFor(plan: BookPlan, e: PlannedEpisode, cast: StoredCast, de
   return { script: outcome.script, scriptId: written.find((w) => w.status === "valid")!.id };
 }
 
+async function scriptFor(plan: BookPlan, e: PlannedEpisode, cast: StoredCast, deps: GenerateDeps): Promise<{ script: Script; scriptId: string } | { failed: string }> {
+  const stored = loadValidScript(deps.db, e.chapterId);
+  if (stored) return { script: ScriptSchema.parse(stored.script), scriptId: stored.id };
+  return adaptEpisode(plan, e, cast, deps);
+}
+
 /**
  * One row per Script segment (`segments`), so a Cast edit can invalidate exactly the changed
  * characters' lines. Dialogue rows carry the Cast member's stored name, which is what the edit
  * matches. Existing rows are kept.
  */
-function writeSegmentRows(db: DatabaseSync, scriptId: string, script: Script, cast: StoredCast): void {
+export function writeSegmentRows(db: DatabaseSync, scriptId: string, script: Script, cast: StoredCast): void {
   const byKey = new Map(cast.characters.map((c) => [nameKey(c.name), c.name]));
   const insert = db.prepare(
     `INSERT OR IGNORE INTO segments (id, script_id, section, scene_idx, idx, kind, speaker, text, contains_verbatim_quote, sfx_id, delivery, status)
@@ -299,7 +314,7 @@ function writeSegmentRows(db: DatabaseSync, scriptId: string, script: Script, ca
   }
 }
 
-function markRendered(db: DatabaseSync, scriptId: string, script: Script, outcomes: SegmentOutcome[]): void {
+export function markRendered(db: DatabaseSync, scriptId: string, script: Script, outcomes: SegmentOutcome[]): void {
   const byPath = new Map(outcomes.map((o) => [o.id, o]));
   const update = db.prepare(
     `UPDATE segments SET cache_key = ?, audio_path = ?, duration_ms = ?, status = 'rendered'
@@ -312,7 +327,25 @@ function markRendered(db: DatabaseSync, scriptId: string, script: Script, outcom
   }
 }
 
-async function renderAndMix(plan: BookPlan, e: PlannedEpisode, script: Script, scriptId: string, cast: StoredCast, deps: GenerateDeps): Promise<{ durationMs: number } | { failed: string }> {
+export interface RenderedSpeech {
+  speech: Map<string, AudioFile>;
+  tts: TtsProvider;
+  lines: number;
+  /** Lines the speech service rendered now (each a TTS call); the rest came from the cache. */
+  rendered: number;
+  cached: number;
+}
+
+/** Render a Script's speech through the render cache (identical lines are cache hits whatever their position). */
+export async function renderSpeech(
+  plan: BookPlan,
+  e: PlannedEpisode,
+  script: Script,
+  scriptId: string,
+  cast: StoredCast,
+  deps: GenerateDeps,
+  onProgress?: (done: number, total: number) => void,
+): Promise<RenderedSpeech | { failed: string }> {
   // The speech provider for this book's own voices (the catalogue its Cast is pinned to).
   let tts: TtsProvider;
   try {
@@ -347,12 +380,21 @@ async function renderAndMix(plan: BookPlan, e: PlannedEpisode, script: Script, s
     onSegment: () => {
       done++;
       if (done % 10 === 0 || done === lines.length) deps.log(`episode ${e.episodeNumber}: ${done}/${lines.length} lines rendered`);
+      onProgress?.(done, lines.length);
     },
   }).catch(stopOn);
   publishOf(deps)((db) => markRendered(db, scriptId, script, outcomes));
   const failed = outcomes.filter((o) => o.status === "failed");
   if (failed.length > 0) return { failed: `${failed.length} line(s) failed to render (first: ${failed[0]!.status === "failed" ? failed[0]!.error.message : ""}); run again to retry` };
   const speech = new Map<string, AudioFile>(outcomes.flatMap((o) => (o.status === "failed" ? [] : [[o.id, { path: o.result.path, frames: o.result.info.frames }] as const])));
+  const rendered = outcomes.filter((o) => o.status === "rendered").length;
+  return { speech, tts, lines: lines.length, rendered, cached: outcomes.length - rendered };
+}
+
+async function renderAndMix(plan: BookPlan, e: PlannedEpisode, script: Script, scriptId: string, cast: StoredCast, deps: GenerateDeps): Promise<{ durationMs: number } | { failed: string }> {
+  const voiced = await renderSpeech(plan, e, script, scriptId, cast, deps);
+  if ("failed" in voiced) return voiced;
+  const { speech, tts } = voiced;
 
   const outDir = join(deps.broadcastDir, "episodes", e.stationId);
   await mkdir(outDir, { recursive: true });
@@ -409,6 +451,17 @@ export async function produceEpisode(plan: BookPlan, e: PlannedEpisode, cast: St
     result = "failed" in mixed ? { ...base, status: "failed", reason: mixed.failed } : { ...base, status: "ready", durationMs: mixed.durationMs, reused: false };
   }
   if (result.status === "ready") {
+    await putOnAir(plan, e, result.durationMs, `/broadcast/episodes/${e.stationId}`, deps);
+    deps.log(`episode ${e.episodeNumber}: ${result.reused ? "already on air" : "on air"} as ${e.stationId} (${(result.durationMs / 60_000).toFixed(1)} min)`);
+  } else {
+    deps.log(`episode ${e.episodeNumber}: not produced: ${result.reason}`);
+  }
+  return result;
+}
+
+/** Put an episode's files (under the site path `base`) on the dial. */
+export async function putOnAir(plan: BookPlan, e: PlannedEpisode, durationMs: number, base: string, deps: GenerateDeps): Promise<void> {
+  {
     const station: Station = {
       status: "ready",
       id: e.stationId,
@@ -416,20 +469,16 @@ export async function produceEpisode(plan: BookPlan, e: PlannedEpisode, cast: St
       author: (plan.author ?? "Unknown author").slice(0, 200),
       episodeNumber: e.episodeNumber,
       title: e.title.slice(0, 200),
-      durationMs: result.durationMs,
-      cleanUrl: `/broadcast/episodes/${e.stationId}/episode.mp3`,
-      amUrl: `/broadcast/episodes/${e.stationId}/episode-am.mp3`,
-      vttUrl: `/broadcast/episodes/${e.stationId}/episode.vtt`,
+      durationMs,
+      cleanUrl: `${base}/episode.mp3`,
+      amUrl: `${base}/episode-am.mp3`,
+      vttUrl: `${base}/episode.vtt`,
     };
     const stationsPath = join(deps.broadcastDir, "stations.json");
     await mkdir(deps.broadcastDir, { recursive: true });
     deps.fence?.();
     await writeStations(stationsPath, mergeStations(await readStations(stationsPath), [station]));
-    deps.log(`episode ${e.episodeNumber}: ${result.reused ? "already on air" : "on air"} as ${e.stationId} (${(result.durationMs / 60_000).toFixed(1)} min)`);
-  } else {
-    deps.log(`episode ${e.episodeNumber}: not produced: ${result.reason}`);
   }
-  return result;
 }
 
 /** Run the whole flow for the chosen chapters. Per-episode failures are reported and the run goes on; budget and access problems stop it. */

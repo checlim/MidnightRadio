@@ -2,9 +2,9 @@ import { randomBytes } from "node:crypto";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { BudgetLedger, loadBudgetConfig, loadCast } from "@midnight-radio/db";
+import { BudgetLedger, getProgress, loadBudgetConfig, loadCast, loadValidScript, type ProgressStage, type StageProgress } from "@midnight-radio/db";
 import { IngestError, ingestEpub } from "@midnight-radio/ingest";
-import { EPISODE_JOB, JobQueue, planBook, stationIdFor, storeBook, uploadPathFor, type JobState } from "@midnight-radio/worker";
+import { EPISODE_JOB, JobQueue, SOUND_DESIGN_JOB, planBook, stationIdFor, storeBook, uploadPathFor, type JobState } from "@midnight-radio/worker";
 import { z } from "zod";
 import type { WebConfig } from "./config";
 
@@ -117,6 +117,21 @@ export interface EpisodeView {
   message: string | null;
   linesRendered: number;
   linesTotal: number;
+  /** The episode revision on air (sound-designed episodes), or null for an original-flow episode or none. */
+  revision: number | null;
+  /** Whether the episode on air was mixed with the sound library (a sound-design revision). */
+  soundDesigned: boolean;
+  /** Whether there is a saved Script that sounds can be added to. */
+  hasScript: boolean;
+  /** The newest job for this episode of either kind, with its per-stage progress. */
+  job: null | {
+    kind: "episode" | "sound-design";
+    state: JobState;
+    message: string | null;
+    cancelRequested: boolean;
+    soundDesign: boolean;
+    progress: Partial<Record<ProgressStage, Pick<StageProgress, "state" | "done" | "total" | "message">>>;
+  };
 }
 
 export interface BookView {
@@ -153,7 +168,10 @@ export function bookView(db: DatabaseSync, config: WebConfig, bookId: string): B
     .prepare("SELECT id, idx, title, part, part_count AS partCount, word_count AS words FROM chapters WHERE book_id = ? ORDER BY idx, part")
     .all(bookId) as unknown as ChapterRow[];
   const job = db.prepare("SELECT state, error FROM jobs WHERE kind = ? AND ref_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1");
-  const episode = db.prepare("SELECT stale FROM episodes WHERE chapter_id = ?");
+  const episode = db.prepare("SELECT e.stale, r.revision, r.snapshot_id AS snapshotId FROM episodes e LEFT JOIN episode_revisions r ON r.id = e.revision_id WHERE e.chapter_id = ?");
+  const latest = db.prepare(
+    "SELECT id, kind, state, error, cancel_requested AS cancelRequested, options_json AS options FROM jobs WHERE kind IN (?, ?) AND ref_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+  );
   const lines = db.prepare(
     `SELECT COUNT(*) AS total, SUM(g.status = 'rendered') AS rendered FROM segments g
      WHERE g.kind IN ('announcer', 'narration', 'dialogue')
@@ -163,7 +181,8 @@ export function bookView(db: DatabaseSync, config: WebConfig, bookId: string): B
   rows.forEach((r, i) => {
     const episodeNumber = i + 1;
     const j = job.get(EPISODE_JOB, r.id) as { state: JobState; error: string | null } | undefined;
-    const e = episode.get(r.id) as { stale: number } | undefined;
+    const e = episode.get(r.id) as { stale: number; revision: number | null; snapshotId: string | null } | undefined;
+    const last = latest.get(EPISODE_JOB, SOUND_DESIGN_JOB, r.id) as { id: string; kind: "episode" | "sound-design"; state: JobState; error: string | null; cancelRequested: number; options: string | null } | undefined;
     const l = lines.get(r.id) as { total: number; rendered: number | null };
     const state: EpisodeState =
       j?.state === "queued" || j?.state === "running" ? j.state : e ? (e.stale ? "stale" : "ready") : j?.state === "failed" || j?.state === "over_budget" ? j.state : "not_started";
@@ -176,6 +195,19 @@ export function bookView(db: DatabaseSync, config: WebConfig, bookId: string): B
       message: state === "failed" || state === "over_budget" ? (j?.error ?? null) : null,
       linesRendered: Number(l.rendered ?? 0),
       linesTotal: Number(l.total),
+      revision: e?.revision === null || e?.revision === undefined ? null : Number(e.revision),
+      soundDesigned: Boolean(e?.snapshotId),
+      hasScript: loadValidScript(db, r.id) !== undefined,
+      job: last
+        ? {
+            kind: last.kind,
+            state: last.state,
+            message: last.state === "failed" || last.state === "over_budget" ? last.error : null,
+            cancelRequested: Number(last.cancelRequested) === 1,
+            soundDesign: last.kind === SOUND_DESIGN_JOB || (last.options !== null && (JSON.parse(last.options) as { soundDesign?: unknown }).soundDesign === true),
+            progress: Object.fromEntries(Object.entries(getProgress(db, last.id)).map(([k, v]) => [k, { state: v.state, done: v.done, total: v.total, message: v.message }])),
+          }
+        : null,
     };
     const ch = chapters.get(r.idx) ?? { number: r.idx + 1, title: r.title, words: 0, episodes: [] };
     ch.words += Number(r.words);
@@ -205,6 +237,12 @@ export function bookView(db: DatabaseSync, config: WebConfig, bookId: string): B
 export const GenerateRequestSchema = z.strictObject({
   chapters: z.array(z.number().int().min(1)).min(1).max(500),
   charBudget: z.number().int().min(1),
+  /** Prepare the sound library first and design sounds into the episodes. Absent or false: the original flow. */
+  soundDesign: z.boolean().optional(),
+});
+
+export const ChaptersRequestSchema = z.strictObject({
+  chapters: z.array(z.number().int().min(1)).min(1).max(500),
 });
 
 /**
@@ -215,7 +253,7 @@ export const GenerateRequestSchema = z.strictObject({
 export function startGeneration(db: DatabaseSync, config: WebConfig, bookId: string, input: unknown): { queued: string[] } {
   const parsed = GenerateRequestSchema.safeParse(input);
   if (!parsed.success) throw new HttpError(400, "Send the chapter numbers to generate and a speech budget in characters.");
-  const { chapters, charBudget } = parsed.data;
+  const { chapters, charBudget, soundDesign } = parsed.data;
   const view = bookView(db, config, bookId);
   if (!view) throw new HttpError(404, "There is no such book.");
   if (charBudget > config.bookTtsCharCeiling) throw new HttpError(422, `The speech budget cannot be more than this site's limit of ${config.bookTtsCharCeiling.toLocaleString("en")} characters.`);
@@ -228,10 +266,57 @@ export function startGeneration(db: DatabaseSync, config: WebConfig, bookId: str
   for (const n of [...new Set(chapters)].sort((a, b) => a - b)) {
     for (const e of byNumber.get(n)!.episodes) {
       if (e.state === "ready") continue;
-      const job = queue.enqueue(EPISODE_JOB, e.chapterId);
+      const job = soundDesign ? queue.enqueue(EPISODE_JOB, e.chapterId, { soundDesign: true }) : queue.enqueue(EPISODE_JOB, e.chapterId);
       if (job.state === "over_budget") queue.resume(job.id);
       queued.push(e.chapterId);
     }
   }
   return { queued };
+}
+
+/** The episodes of the chosen chapters of a Book. */
+function chosenEpisodes(db: DatabaseSync, config: WebConfig, bookId: string, input: unknown): EpisodeView[] {
+  const parsed = ChaptersRequestSchema.safeParse(input);
+  if (!parsed.success) throw new HttpError(400, "Send the chapter numbers.");
+  const view = bookView(db, config, bookId);
+  if (!view) throw new HttpError(404, "There is no such book.");
+  const byNumber = new Map(view.chapters.map((c) => [c.number, c]));
+  const unknown = parsed.data.chapters.filter((n) => !byNumber.has(n));
+  if (unknown.length > 0) throw new HttpError(422, `This book has no chapter ${unknown.join(", ")}.`);
+  return [...new Set(parsed.data.chapters)].sort((a, b) => a - b).flatMap((n) => byNumber.get(n)!.episodes);
+}
+
+/**
+ * Queue a sound-design remix for every episode of the chosen chapters that has a saved Script:
+ * sounds are added to that Script and it is remixed, with no new adaptation and its speech from
+ * the render cache. The episode on air stays until the remix has passed every check.
+ */
+export function startSoundDesign(db: DatabaseSync, config: WebConfig, bookId: string, input: unknown): { queued: string[] } {
+  const episodes = chosenEpisodes(db, config, bookId, input);
+  const missing = episodes.filter((e) => !e.hasScript);
+  if (missing.length > 0) throw new HttpError(422, `Generate these episodes first; they have no Script to add sounds to: ${missing.map((e) => e.episodeNumber).join(", ")}.`);
+  const busy = episodes.filter((e) => e.job && (e.job.state === "queued" || e.job.state === "running") && e.job.kind === "episode");
+  if (busy.length > 0) throw new HttpError(409, `Wait for episode ${busy.map((e) => e.episodeNumber).join(", ")} to finish generating first.`);
+  const queue = new JobQueue(db);
+  const queued: string[] = [];
+  for (const e of episodes) {
+    const job = queue.enqueue(SOUND_DESIGN_JOB, e.chapterId);
+    if (job.state === "over_budget") queue.resume(job.id);
+    queued.push(e.chapterId);
+  }
+  return { queued };
+}
+
+/** Ask the queued or running jobs of the chosen chapters to stop. Finished work is kept. */
+export function cancelJobs(db: DatabaseSync, config: WebConfig, bookId: string, input: unknown): { cancelled: string[] } {
+  const episodes = chosenEpisodes(db, config, bookId, input);
+  const queue = new JobQueue(db);
+  const cancelled: string[] = [];
+  for (const e of episodes) {
+    for (const kind of [EPISODE_JOB, SOUND_DESIGN_JOB]) {
+      const row = db.prepare("SELECT id FROM jobs WHERE kind = ? AND ref_id = ? AND state IN ('queued', 'running', 'over_budget')").get(kind, e.chapterId) as { id: string } | undefined;
+      if (row && queue.requestCancel(row.id)) cancelled.push(e.chapterId);
+    }
+  }
+  return { cancelled };
 }

@@ -15,6 +15,10 @@ export interface Job {
   error: string | null;
   createdAt: number;
   updatedAt: number;
+  /** What the job was queued with; null for jobs queued before job options existed (run as before). */
+  options: Record<string, unknown> | null;
+  /** A person asked for the job to stop. */
+  cancelRequested: boolean;
 }
 
 /** Proof of ownership for a claimed job. Every write on the job's behalf must present it. */
@@ -45,6 +49,8 @@ interface JobRow {
   error: string | null;
   created_at: number;
   updated_at: number;
+  options_json: string | null;
+  cancel_requested: number;
 }
 
 const toJob = (r: JobRow): Job => ({
@@ -58,6 +64,8 @@ const toJob = (r: JobRow): Job => ({
   error: r.error,
   createdAt: Number(r.created_at),
   updatedAt: Number(r.updated_at),
+  options: r.options_json === null ? null : (JSON.parse(r.options_json) as Record<string, unknown>),
+  cancelRequested: Number(r.cancel_requested) === 1,
 });
 
 /**
@@ -89,7 +97,8 @@ export class JobQueue {
    * Enqueue a job, or return the existing queued/running/over_budget job for the same (kind, refId).
    * A parked over-budget job is returned as-is (not duplicated); call `resume` once budget allows.
    */
-  enqueue(kind: string, refId: string): Job {
+  enqueue(kind: string, refId: string, options?: Record<string, unknown>): Job {
+    const optionsJson = options === undefined ? null : JSON.stringify(options);
     return this.tx(() => {
       const existing = this.db
         .prepare(
@@ -97,14 +106,51 @@ export class JobQueue {
            ORDER BY CASE state WHEN 'over_budget' THEN 1 ELSE 0 END LIMIT 1`,
         )
         .get(kind, refId) as JobRow | undefined;
-      if (existing) return toJob(existing);
+      if (existing) {
+        // A job that has not started yet takes the newest options; a running job keeps its own.
+        if (optionsJson !== null && existing.state !== "running" && existing.options_json !== optionsJson) {
+          return toJob(this.db.prepare("UPDATE jobs SET options_json = ?, updated_at = ? WHERE id = ? RETURNING *").get(optionsJson, this.now(), existing.id) as unknown as JobRow);
+        }
+        return toJob(existing);
+      }
       const t = this.now();
       const row = this.db
         .prepare(
-          "INSERT INTO jobs (id, kind, ref_id, state, attempts, created_at, updated_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING *",
+          "INSERT INTO jobs (id, kind, ref_id, state, attempts, created_at, updated_at, options_json) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?) RETURNING *",
         )
-        .get(this.newId(), kind, refId, t, t) as unknown as JobRow;
+        .get(this.newId(), kind, refId, t, t, optionsJson) as unknown as JobRow;
       return toJob(row);
+    });
+  }
+
+  /**
+   * Ask a job to stop. A queued or parked job is failed at once ("cancelled"); a running one is
+   * flagged, and its runner aborts it at the next heartbeat. Returns false for a finished job.
+   */
+  requestCancel(jobId: string): boolean {
+    return this.tx(() => {
+      const t = this.now();
+      const parked = this.db
+        .prepare("UPDATE jobs SET state = 'failed', error = 'cancelled by a person', cancel_requested = 0, updated_at = ? WHERE id = ? AND state IN ('queued', 'over_budget')")
+        .run(t, jobId);
+      if (Number(parked.changes) === 1) return true;
+      const running = this.db.prepare("UPDATE jobs SET cancel_requested = 1, updated_at = ? WHERE id = ? AND state = 'running'").run(t, jobId);
+      return Number(running.changes) === 1;
+    });
+  }
+
+  /** Whether a person asked the job to stop. */
+  cancellationRequested(jobId: string): boolean {
+    return (this.db.prepare("SELECT cancel_requested AS c FROM jobs WHERE id = ?").get(jobId) as { c: number } | undefined)?.c === 1;
+  }
+
+  /** End a job a person cancelled: failed, not retried, flag cleared. */
+  cancel(lease: Lease): void {
+    this.tx(() => {
+      this.assertHolds(lease);
+      this.db
+        .prepare("UPDATE jobs SET state = 'failed', error = 'cancelled by a person', cancel_requested = 0, lease_token = NULL, lease_until = NULL, updated_at = ? WHERE id = ?")
+        .run(this.now(), lease.jobId);
     });
   }
 

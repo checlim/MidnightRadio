@@ -29,8 +29,24 @@ describe("measureTake and judgeTake", () => {
     expect(judge(creak(3.5), discrete).rejected).toBe("3.5 s long, not 3 s");
     expect(judge(make(3, (t) => 1.4 * Math.sin(2 * Math.PI * 200 * t)), discrete).rejected).toMatch(/^clips/);
     expect(judge(make(3, () => 0.001 * noise()), discrete).rejected).toMatch(/^nearly silent/);
-    expect(judge(make(3, (t) => (t < 0.3 ? 0.4 * Math.sin(2 * Math.PI * 300 * t) : 0)), discrete).rejected).toMatch(/audible for only 10 %/);
+    // Mostly silence and not a clear transient: too quiet, too late, or too brief.
+    expect(judge(make(3, (t) => (t < 0.3 ? 0.05 * Math.sin(2 * Math.PI * 300 * t) : 0)), discrete).rejected).toMatch(/audible for only 10 %/);
+    expect(judge(make(3, (t) => (t > 1 && t < 1.3 ? 0.4 * Math.sin(2 * Math.PI * 300 * t) : 0)), discrete).rejected).toMatch(/audible for only 10 %/);
     expect(judge(make(6, (t) => (t > 2 && t < 3.5 ? 0 : 0.15 * noise())), bed).rejected).toMatch(/drops out for 1\.5 s/);
+  });
+
+  it("accepts a short match strike that fills only 7 % of a 3 s file, without loosening the other checks", () => {
+    // A 210 ms strike: a sharp noisy flare that decays, then silence.
+    const strike = make(3, (t) => (t < 0.21 ? 0.6 * Math.exp(-t * 12) * noise() : 0));
+    const v = judge(strike, discrete);
+    expect(v.activeFraction).toBeLessThan(0.15);
+    expect(v.longestActiveS).toBeGreaterThanOrEqual(0.1);
+    expect(v).toMatchObject({ rejected: null, leadSilenceS: 0 });
+    // The same strike clipped, or in a file of the wrong length, is still out.
+    expect(judge(make(3, (t) => (t < 0.21 ? 1.5 * noise() : 0)), discrete).rejected).toMatch(/^clips/);
+    expect(judge(make(3.5, (t) => (t < 0.21 ? 0.6 * Math.exp(-t * 12) * noise() : 0)), discrete).rejected).toMatch(/not 3 s/);
+    // A 30 ms blip is not a transient.
+    expect(judge(make(3, (t) => (t < 0.03 ? 0.6 * noise() : 0)), discrete).rejected).toMatch(/nearly silent|audible for only/);
   });
 
   it("scores clicks, a late start and an unsteady bed lower", () => {

@@ -94,7 +94,9 @@ export function mixGraph(timeline: Timeline, opts: Pick<RenderOptions, "beds" | 
     }
   }
   if (beds.length === 0) chains.push(`[dry]anull[out]`);
-  else chains.push(`[dry]${beds.join("")}amix=inputs=${beds.length + 1}:normalize=0:duration=first:dropout_transition=0,atrim=end_sample=${total}[out]`);
+  // Every input is exactly `total` frames, so `longest` equals `first`; FFmpeg 4.4's amix with
+  // `duration=first` ends early (seconds short) when a delayed bed lags behind the dry track.
+  else chains.push(`[dry]${beds.join("")}amix=inputs=${beds.length + 1}:normalize=0:duration=longest:dropout_transition=0,atrim=end_sample=${total}[out]`);
   return { inputs, graph: chains.join(";") };
 }
 

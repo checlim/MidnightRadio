@@ -499,5 +499,116 @@ class SfxTests(unittest.TestCase):
                     self.assertEqual(s.json("POST", "/sfx", body)[0], 400)
 
 
+KEY = "ab" * 32
+SFX_BODY = {"prompt": "a door creaks", "durationSec": 1, "seed": 4}
+class CountingSfx(FakeBackend):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+    def render_sfx(self, request):
+        self.calls += 1
+        return super().render_sfx(request)
+class FlakySfx(CountingSfx):
+    def render_sfx(self, request):
+        if self.calls == 0:
+            self.calls += 1
+            raise BackendError("model_failed", "boom")
+        return super().render_sfx(request)
+class BlockingSfx(CountingSfx):
+    def __init__(self):
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+    def render_sfx(self, request):
+        self.started.set()
+        self.release.wait(10)
+        return super().render_sfx(request)
+def idem(key=KEY):
+    return {"Idempotency-Key": key}
+class IdempotencyTests(unittest.TestCase):
+    def test_health_advertises_idempotency_only_with_an_sfx_model(self):
+        with serving() as s:
+            self.assertIs(s.json("GET", "/health")[1]["sfx"]["idempotency"], True)
+        class NoSfx(FakeBackend):
+            def sfx_info(self):
+                return None
+        with serving(backend=NoSfx()) as s:
+            self.assertIsNone(s.json("GET", "/health")[1]["sfx"])
+    def test_replay_returns_identical_bytes_without_rendering_again(self):
+        backend = CountingSfx()
+        with serving(backend=backend) as s:
+            a = s.request("POST", "/sfx", SFX_BODY, idem())
+            b = s.request("POST", "/sfx", dict(SFX_BODY), idem())
+        self.assertEqual((a[0], b[0], backend.calls), (200, 200, 1))
+        self.assertEqual(a[2], b[2])
+        self.assertNotIn("x-idempotent-replay", a[1])
+        self.assertEqual(b[1]["x-idempotent-replay"], "true")
+        for h in ("x-model-revision", "x-render-ms"):
+            self.assertEqual(a[1][h], b[1][h])
+    def test_an_in_progress_duplicate_gets_409_with_retry_after(self):
+        backend = BlockingSfx()
+        with serving(backend=backend) as s:
+            first = []
+            t = threading.Thread(target=lambda: first.append(s.request("POST", "/sfx", SFX_BODY, idem())))
+            t.start()
+            self.assertTrue(backend.started.wait(5))
+            status, headers, data = s.request("POST", "/sfx", SFX_BODY, idem())
+            self.assertEqual(status, 409)
+            self.assertEqual(json.loads(data)["error"]["code"], "in_progress")
+            self.assertTrue(headers["retry-after"].isdigit())
+            backend.release.set()
+            t.join(10)
+            self.assertEqual(first[0][0], 200)
+            again = s.request("POST", "/sfx", SFX_BODY, idem())
+        self.assertEqual((again[0], again[2], backend.calls), (200, first[0][2], 1))
+    def test_a_different_body_with_the_same_key_gets_422(self):
+        backend = CountingSfx()
+        with serving(backend=backend) as s:
+            s.request("POST", "/sfx", SFX_BODY, idem())
+            for other in ({**SFX_BODY, "seed": 5}, {**SFX_BODY, "prompt": "rain"}, {**SFX_BODY, "durationSec": 2}, {"prompt": "a door creaks", "durationSec": 1}):
+                status, body = s.json("POST", "/sfx", other, idem())
+                self.assertEqual((status, body["error"]["code"]), (422, "idempotency_mismatch"))
+        self.assertEqual(backend.calls, 1)
+    def test_a_failed_render_forgets_the_key(self):
+        backend = FlakySfx()
+        with serving(backend=backend) as s:
+            self.assertEqual(s.request("POST", "/sfx", SFX_BODY, idem())[0], 500)
+            self.assertEqual(s.request("POST", "/sfx", SFX_BODY, idem())[0], 200)
+            replay = s.request("POST", "/sfx", SFX_BODY, idem())
+        self.assertEqual((replay[1]["x-idempotent-replay"], backend.calls), ("true", 2))
+    def test_malformed_keys_get_400(self):
+        with serving() as s:
+            for key in ("", "ab" * 31, "ab" * 33, "AB" * 32, "zz" * 32, "ab" * 32 + "x"):
+                with self.subTest(key=key):
+                    self.assertEqual(s.json("POST", "/sfx", SFX_BODY, idem(key))[0], 400)
+    def test_without_the_header_every_request_renders(self):
+        backend = CountingSfx()
+        with serving(backend=backend) as s:
+            a = s.request("POST", "/sfx", SFX_BODY)
+            b = s.request("POST", "/sfx", SFX_BODY)
+        self.assertEqual((a[0], b[0], backend.calls), (200, 200, 2))
+        self.assertNotIn("x-idempotent-replay", b[1])
+    def test_caller_checks_run_before_idempotency(self):
+        with serving(token=TOKEN) as s:
+            self.assertEqual(s.json("POST", "/sfx", SFX_BODY, idem("bad"))[0], 401)
+            self.assertEqual(s.json("POST", "/sfx", SFX_BODY, {**idem(), "Origin": "http://x"})[0], 403)
+    def test_finished_results_are_bounded_and_the_oldest_is_evicted(self):
+        backend = CountingSfx()
+        with serving(backend=backend) as s:
+            keys = [f"{i:064x}" for i in range(33)]
+            for k in keys:
+                s.request("POST", "/sfx", SFX_BODY, idem(k))
+            self.assertEqual(len(s.server.idempotency._done), 32)
+            self.assertEqual(s.request("POST", "/sfx", SFX_BODY, idem(keys[32]))[1].get("x-idempotent-replay"), "true")
+            self.assertEqual(backend.calls, 33)
+            s.request("POST", "/sfx", SFX_BODY, idem(keys[0]))  # evicted: renders again
+        self.assertEqual(backend.calls, 34)
+    def test_the_key_never_appears_in_logs_or_bodies(self):
+        with serving() as s, self.assertLogs("local_audio", level="INFO") as logs:
+            s.request("POST", "/sfx", SFX_BODY, idem())
+            _, _, replay_body = s.request("POST", "/sfx", SFX_BODY, idem())
+            _, _, err = s.request("POST", "/sfx", {**SFX_BODY, "seed": 9}, idem())
+        self.assertEqual(logs.output, ["INFO:local_audio:POST /sfx -> 200", "INFO:local_audio:POST /sfx -> 200", "INFO:local_audio:POST /sfx -> 422"])
+        self.assertNotIn(KEY.encode(), err)
 if __name__ == "__main__":
     unittest.main()

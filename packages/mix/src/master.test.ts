@@ -1,3 +1,8 @@
+/*
+ * Re-run these tests (the whole mix suite) against FFmpeg 4.4.2, the production version:
+ *   packages/mix/src/test-support/run-ffmpeg44.sh
+ * It builds a cached Docker image (src/test-support/ffmpeg44.Dockerfile) and runs vitest in a copy of the repo.
+ */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -6,7 +11,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { encodeFloatWav } from "./envelope.js";
 import { probeAudio, runFfmpeg } from "./ffmpeg.js";
-import { LUFS_TOLERANCE, MAX_TRUE_PEAK, MP3_RATE, MasteringError, TARGET_LUFS, masterToMp3, measureLoudness, meetsTargets, renderAm } from "./master.js";
+import { LUFS_TOLERANCE, MAX_TRUE_PEAK, MP3_RATE, MasteringError, TARGET_LUFS, masterToMp3, measureLoudness, meetsTargets, parseEbur128Summary, renderAm } from "./master.js";
 import { SAMPLE_RATE } from "./timeline.js";
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
@@ -50,7 +55,10 @@ describe.skipIf(!hasFfmpeg)("Vintage AM and mastering (real ffmpeg)", () => {
   it("keeps the AM variant exactly as long as the clean mix", async () => {
     expect((await probeAudio(am())).durationMs).toBe((await probeAudio(clean())).durationMs);
     const b = await readFile(am());
-    expect(b.readUInt16LE(20)).toBe(3); // float, still inside the pipeline
+    // Float, still inside the pipeline. FFmpeg 4.4.2 writes 32-bit float WAV as WAVE_FORMAT_EXTENSIBLE (0xFFFE) with
+    // the float sub-format (3) in the GUID; FFmpeg 9 writes plain format 3. Both are the same samples.
+    const tag = b.readUInt16LE(20);
+    expect(tag === 3 || (tag === 0xfffe && b.readUInt16LE(44) === 3)).toBe(true);
   });
 
   it("band-limits AM to the telephone band: little left below 300 Hz or above 3,400 Hz", async () => {
@@ -85,7 +93,8 @@ describe.skipIf(!hasFfmpeg)("Vintage AM and mastering (real ffmpeg)", () => {
       expect(r).toMatchObject(measured);
       const p = await probeAudio(mp3);
       expect(p).toMatchObject({ codec: "mp3", sampleRate: MP3_RATE, channels: 1 });
-      expect(Math.abs(p.durationMs - 10_000), name).toBeLessThanOrEqual(30);
+      // FFmpeg 4.4.2's ffprobe counts the encoder delay (about 25 ms) in an MP3's duration; newer versions do not.
+      expect(Math.abs(p.durationMs - 10_000), name).toBeLessThanOrEqual(45);
     }
     expect((await readdir(dir)).filter((f) => f.startsWith("master-"))).toEqual([]);
   }, 120_000);
@@ -116,5 +125,22 @@ describe.skipIf(!hasFfmpeg)("Vintage AM and mastering (real ffmpeg)", () => {
     const silent = join(dir, "silent.wav");
     await writeFile(silent, encodeFloatWav(new Float32Array(SAMPLE_RATE * 2)));
     await expect(masterToMp3(silent, join(dir, "silent.mp3"), { tags, chapters: [], workDir: dir }, { log: () => {} })).rejects.toThrow();
+  });
+});
+
+describe("parseEbur128Summary", () => {
+  const fixture = (name: string) => readFile(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+  it("reads the real FFmpeg 4.4.2 summary", async () => {
+    expect(parseEbur128Summary(await fixture("ebur128-summary-ffmpeg-4.4.2.txt"))).toEqual({ integratedLufs: -31.8, truePeakDbtp: -28.1 });
+  });
+  it("reads the real FFmpeg 9.0.2 summary", async () => {
+    expect(parseEbur128Summary(await fixture("ebur128-summary-ffmpeg-9.0.2.txt"))).toEqual({ integratedLufs: -31.7, truePeakDbtp: -28.1 });
+  });
+  it("uses the last summary and reads silence as -inf", () => {
+    const log = "Summary:\n I: -20.0 LUFS\n Peak: -3.0 dBFS\n[x] Summary:\n  Integrated loudness:\n    I:         -70.0 LUFS\n  True peak:\n    Peak:      -inf dBFS\n";
+    expect(parseEbur128Summary(log)).toEqual({ integratedLufs: -70, truePeakDbtp: -Infinity });
+  });
+  it("refuses a log without a summary", () => {
+    expect(() => parseEbur128Summary("nothing here")).toThrow(/no summary/);
   });
 });

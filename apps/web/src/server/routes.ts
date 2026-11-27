@@ -3,7 +3,7 @@ import type { ClonableCatalogue } from "@midnight-radio/core";
 import { loadCast } from "@midnight-radio/db";
 import { loadBookCatalogue, loadSeriesCatalogue } from "@midnight-radio/worker";
 import type { WebConfig } from "./config";
-import { HttpError, bookView, readCapped, startGeneration, toResponse, uploadBook } from "./books";
+import { HttpError, bookView, cancelJobs, readCapped, startGeneration, startSoundDesign, toResponse, uploadBook } from "./books";
 import { guarded } from "./guard";
 
 /**
@@ -12,7 +12,9 @@ import { guarded } from "./guard";
  *
  *   POST /api/books                 upload an EPUB (raw body, file name in x-file-name)
  *   GET  /api/books/:id             the Book: chapters, episode progress, Cast and voices
- *   POST /api/books/:id/generate    { chapters, charBudget }: queue the chosen chapters
+ *   POST /api/books/:id/generate    { chapters, charBudget, soundDesign? }: queue the chosen chapters
+ *   POST /api/books/:id/sound-design { chapters }: add sounds to the saved Scripts and remix them
+ *   POST /api/books/:id/cancel      { chapters }: stop their queued or running jobs
  */
 
 type Params = { params: Promise<{ id: string }> };
@@ -71,6 +73,26 @@ export const generateRoute = (request: Request, ctx: Params) =>
     try {
       const id = await bookId(ctx);
       return Response.json(startGeneration(db(), config, id, await jsonBody(request)), { status: 202, headers: noStore });
+    } catch (err) {
+      return toResponse(err);
+    }
+  });
+
+export const soundDesignRoute = (request: Request, ctx: Params) =>
+  guarded(request, "write", async ({ config, db }) => {
+    try {
+      const id = await bookId(ctx);
+      return Response.json(startSoundDesign(db(), config, id, await jsonBody(request)), { status: 202, headers: noStore });
+    } catch (err) {
+      return toResponse(err);
+    }
+  });
+
+export const cancelRoute = (request: Request, ctx: Params) =>
+  guarded(request, "write", async ({ config, db }) => {
+    try {
+      const id = await bookId(ctx);
+      return Response.json(cancelJobs(db(), config, id, await jsonBody(request)), { headers: noStore });
     } catch (err) {
       return toResponse(err);
     }

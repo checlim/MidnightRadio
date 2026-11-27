@@ -100,6 +100,7 @@ Copy `.env.example` to `.env`. Secrets are read only from environment variables 
 | `GLOBAL_DAILY_TTS_CHAR_LIMIT` | TTS characters allowed per UTC day. TTS runs locally, so this limits render time rather than spend. Missing or `0` disables TTS. |
 | `GLOBAL_DAILY_LLM_TOKEN_LIMIT` | LLM tokens (input plus capped output) allowed per UTC day. Missing or `0` disables paid LLM calls. |
 | `BOOK_TTS_CHAR_LIMIT` | Operator ceiling on any one book's TTS budget (default 60,000). A user-chosen budget can't exceed it. |
+| `SFX_SERVICE_URL`, `SFX_SERVICE_TOKEN`, `SFX_SERVICE_TIMEOUT_MS` | The sound-effect server ([API](docs/sfx-service-api.md)) used to build the shared sound library for jobs with sound design, and by `pnpm sfx:build`. Same https/token rules as speech. Unset: sound-designed jobs use the library already built in `<DATA_DIR>/sfx-library`, or fail saying what to set. |
 | `GENERATION_ENABLED` | Planned. Off by default and always off on the live site: upload, cast editing and every generation route are disabled, and only pre-rendered demos play. Turn it on only on a local machine running the audio models. |
 | `UPLOAD_PASSKEY` | Optional judge passkey for all custom generation, sent in the `x-midnight-passkey` header. Demo playback stays public. |
 

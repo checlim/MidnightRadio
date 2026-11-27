@@ -96,7 +96,8 @@ function castSection(present: PromptCastMember[], chapterIdx: number): string {
     .join("\n");
 }
 
-function soundSection(sfx: SfxCatalogue): string {
+/** The sound library as the model sees it: effect ids, beds and pinned music cues. */
+export function soundSection(sfx: SfxCatalogue): string {
   const sorted = [...sfx.entries].sort((a, b) => (a.id < b.id ? -1 : 1));
   const describe = (e: (typeof sorted)[number]) => `${e.id} (${line(e.title)}${e.tags.length ? `; ${e.tags.join(", ")}` : ""})`;
   const oneOff = sorted.filter((e) => e.kind === "sfx");

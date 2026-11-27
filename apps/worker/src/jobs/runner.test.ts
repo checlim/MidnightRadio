@@ -265,3 +265,27 @@ describe("isFatalJobError with renderSegments", () => {
     expect(rendered).toEqual(["one", "three"]);
   });
 });
+
+describe("cancellation", () => {
+  it("aborts a running handler at the next heartbeat and fails the job without a retry", async () => {
+    const queue = q(1_000);
+    const { id } = queue.enqueue("render", "c1");
+    let reason: unknown;
+    const done = runOnce({
+      queue,
+      heartbeatMs: 20,
+      handlers: {
+        render: async ({ signal }) => {
+          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+          reason = signal.reason;
+          throw new Error("stopped part-way");
+        },
+      },
+    });
+    await sleep(50);
+    expect(queue.requestCancel(id)).toBe(true);
+    await done;
+    expect((reason as Error).name).toBe("JobCancelledError");
+    expect(queue.get(id)).toMatchObject({ state: "failed", error: "cancelled by a person", attempts: 1 });
+  });
+});

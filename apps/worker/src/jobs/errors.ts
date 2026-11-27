@@ -22,3 +22,11 @@ export class PermanentJobError extends Error {
  * must stop rendering instead of retrying or recording failures it may no longer publish.
  */
 export const isFatalJobError = (err: unknown): boolean => err instanceof LeaseLostError;
+
+/** A person cancelled the job. It is failed without retries. */
+export class JobCancelledError extends Error {
+  constructor(readonly jobId: string) {
+    super("cancelled by a person");
+    this.name = "JobCancelledError";
+  }
+}

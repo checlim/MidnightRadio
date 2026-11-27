@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { rm } from "node:fs/promises";
 import { z } from "zod";
 
 /**
@@ -137,6 +138,9 @@ export async function runFfmpeg(job: FfmpegJob, opts: FfmpegOptions = {}): Promi
   const started = Date.now();
   const r = await collect(program, args, timeoutMs, 0);
   if (!r.spawnError && !r.timedOut && r.code === 0) return { log: r.stderr, durationMs: Date.now() - started };
+  // A failed job's output is never usable. FFmpeg 4.4 opens (and so creates or truncates) the output
+  // before it parses the filter graph, so a bad graph would leave an empty file at the final path.
+  if (job.output !== null) await rm(job.output, { force: true }).catch(() => undefined);
 
   const graph = job.filter?.graph ?? null;
   const why = r.spawnError ? `could not start ffmpeg (${(r.spawnError as NodeJS.ErrnoException).code ?? r.spawnError.message})` : r.timedOut ? `ffmpeg ran longer than ${timeoutMs} ms and was stopped` : `ffmpeg failed (exit ${r.code ?? r.signal})`;

@@ -6,15 +6,19 @@ Hardening, because this is a model server on a developer's machine:
 - JSON requests only, with a body limit (4 MB for /tts, whose reference clip is inside; 64 KB for /sfx) and strict field checks;
 - an optional bearer token, compared in constant time and never logged or echoed;
 - one model call at a time, because one local model cannot serve two at once;
+- /sfx honours an optional Idempotency-Key (docs/sfx-service-api.md); the key is never logged;
 - logs hold the method, the path and the status only: never bodies, headers or tokens.
 """
 
 import base64
 import binascii
+import collections
+import hashlib
 import hmac
 import io
 import json
 import logging
+import re
 import threading
 import time
 import wave
@@ -35,6 +39,9 @@ MAX_DESIGN_CHARS = 500
 MAX_REFERENCE_SECONDS = 30
 MIN_REFERENCE_RATE, MAX_REFERENCE_RATE = 8_000, 48_000
 MAX_SEED = 2**31 - 1
+MAX_IDEMPOTENT_RESULTS = 32
+IDEMPOTENCY_RETRY_AFTER_S = 5
+_IDEMPOTENCY_KEY = re.compile(r"[0-9a-f]{64}")
 
 
 class HttpError(Exception):
@@ -84,6 +91,38 @@ def _reference_wav(value: Any) -> bytes:
     return data
 
 
+class IdempotencyTable:
+    """Remembers /sfx requests by Idempotency-Key. Own lock; never held while rendering.
+
+    Finished results are kept until restart, at most `max_results` of them (oldest evicted first).
+    A key that is rendering is never evicted.
+    """
+    def __init__(self, max_results: int = MAX_IDEMPOTENT_RESULTS):
+        self.max_results = max_results
+        self._lock = threading.Lock()
+        self._running: dict = {}  # key -> fingerprint
+        self._done: "collections.OrderedDict[str, tuple]" = collections.OrderedDict()  # key -> (fingerprint, wav, headers)
+    def begin(self, key: str, fingerprint: str) -> Optional[tuple]:
+        """Returns (wav, headers) to replay, or None when the caller must render (the key is then reserved)."""
+        with self._lock:
+            if key in self._running:
+                raise HttpError(409, "in_progress", "a request with this Idempotency-Key is still rendering; retry with the same key")
+            if key in self._done:
+                stored, wav, headers = self._done[key]
+                if stored != fingerprint:
+                    raise HttpError(422, "idempotency_mismatch", "this Idempotency-Key was used with a different request")
+                return wav, dict(headers)
+            self._running[key] = fingerprint
+            return None
+    def finish(self, key: str, fingerprint: str, wav: bytes, headers: dict) -> None:
+        with self._lock:
+            self._running.pop(key, None)
+            self._done[key] = (fingerprint, wav, dict(headers))
+            while len(self._done) > self.max_results:
+                self._done.popitem(last=False)
+    def forget(self, key: str) -> None:
+        with self._lock:
+            self._running.pop(key, None)
 class LocalAudioServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -93,6 +132,7 @@ class LocalAudioServer(ThreadingHTTPServer):
         self.config = config
         self.backend = backend
         self.model_lock = threading.Lock()
+        self.idempotency = IdempotencyTable()
 
     @property
     def port(self) -> int:
@@ -125,7 +165,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._finish(status)
 
     def _json(self, status: int, payload: dict) -> None:
-        self._send(status, json.dumps(payload).encode("utf-8"), "application/json")
+        extra = {"Retry-After": str(IDEMPOTENCY_RETRY_AFTER_S)} if status == 409 else None
+        self._send(status, json.dumps(payload).encode("utf-8"), "application/json", extra)
 
     def _error(self, err: HttpError) -> None:
         self._json(err.status, {"error": {"code": err.code, "message": err.message}})
@@ -183,6 +224,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _health(self) -> None:
         backend = self.server.backend
+        sfx = backend.sfx_info()
+        if sfx is not None:
+            sfx = {**sfx, "idempotency": True}
         self._json(
             200,
             {
@@ -190,7 +234,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "apiVersion": API_VERSION,
                 "backend": backend.name,
                 "tts": backend.tts_info(),
-                "sfx": backend.sfx_info(),
+                "sfx": sfx,
                 "voiceDesign": backend.design_info(),
             },
         )
@@ -239,7 +283,15 @@ class _Handler(BaseHTTPRequestHandler):
         request = VoiceDesignRequest(body["instruct"], body["text"], language, seed)
         self._render(lambda: self.server.backend.render_design(request), "design")
 
+    def _idempotency_key(self) -> Optional[str]:
+        values = self.headers.get_all("Idempotency-Key")
+        if values is None:
+            return None
+        if len(values) != 1 or not _IDEMPOTENCY_KEY.fullmatch(values[0]):
+            raise HttpError(400, "bad_request", "Idempotency-Key must be 64 lowercase hex characters")
+        return values[0]
     def _sfx(self, body: dict) -> None:
+        key = self._idempotency_key()
         _check_fields(body, {"prompt", "durationSec", "seed"})
         prompt = body.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 500:
@@ -250,9 +302,30 @@ class _Handler(BaseHTTPRequestHandler):
         if self.server.backend.sfx_info() is None:
             raise HttpError(503, "not_ready", "this backend has no sound-effect model")
         request = SfxRequest(prompt, float(duration), _seed(body))
-        self._render(lambda: self.server.backend.render_sfx(request), "sfx")
+        def call() -> bytes:
+            return self.server.backend.render_sfx(request)
+        if key is None:
+            return self._render(call, "sfx")
+        canonical = json.dumps({"prompt": prompt, "durationSec": float(duration), "seed": request.seed}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        fingerprint = hashlib.sha256(canonical.encode("ascii")).hexdigest()
+        replay = self.server.idempotency.begin(key, fingerprint)
+        if replay is not None:
+            wav, headers = replay
+            headers["X-Idempotent-Replay"] = "true"
+            return self._send(200, wav, "audio/wav", headers)
+        try:
+            wav, headers = self._render_result(call, "sfx")
+        except BaseException:
+            self.server.idempotency.forget(key)
+            raise
+        self.server.idempotency.finish(key, fingerprint, wav, headers)
+        self._send(200, wav, "audio/wav", headers)
 
     def _render(self, call: Any, kind: str) -> None:
+        wav, headers = self._render_result(call, kind)
+        self._send(200, wav, "audio/wav", headers)
+
+    def _render_result(self, call: Any, kind: str) -> tuple:
         if not self.server.model_lock.acquire(timeout=self.server.config.queue_timeout_s):
             raise HttpError(503, "busy", "the model is busy; try again")
         started = time.monotonic()
@@ -262,7 +335,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.server.model_lock.release()
         backend = self.server.backend
         info = {"tts": backend.tts_info, "design": backend.design_info, "sfx": backend.sfx_info}[kind]() or {}
-        self._send(200, wav, "audio/wav", {"X-Model-Revision": str(info.get("revision", "")), "X-Render-Ms": str(round((time.monotonic() - started) * 1000))})
+        return wav, {"X-Model-Revision": str(info.get("revision", "")), "X-Render-Ms": str(round((time.monotonic() - started) * 1000))}
 
     # --- entry points ---------------------------------------------------------------------------
 

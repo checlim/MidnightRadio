@@ -40,7 +40,7 @@ describe("migrate", () => {
       (r) => r.name,
     );
     expect(tables).toEqual(
-      ["books", "budget_reservations", "cast_members", "chapters", "episodes", "jobs", "scripts", "segments", "usage"].sort(),
+      ["books", "budget_reservations", "cast_members", "chapters", "episode_revisions", "episodes", "job_progress", "jobs", "library_locks", "scripts", "segments", "sfx_snapshots", "sfx_takes", "usage"].sort(),
     );
     expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: MIGRATIONS.length });
   });

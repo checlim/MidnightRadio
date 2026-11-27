@@ -305,3 +305,29 @@ describe("property: fencing under arbitrary interleavings", () => {
     );
   });
 });
+
+describe("job options and cancellation", () => {
+  it("stores options with the job; a job that has not started takes newer options, a running one keeps its own", () => {
+    const q = queue();
+    const legacy = q.enqueue("episode", "c1");
+    expect(legacy.options).toBeNull(); // jobs without options run exactly as before
+    expect(q.enqueue("episode", "c1", { soundDesign: true })).toMatchObject({ id: legacy.id, options: { soundDesign: true } });
+    const claimed = q.claim()!;
+    expect(claimed.job.options).toEqual({ soundDesign: true });
+    expect(q.enqueue("episode", "c1", { soundDesign: false })).toMatchObject({ id: legacy.id, options: { soundDesign: true } });
+  });
+
+  it("cancels a queued job at once and flags a running one until its runner stops it", () => {
+    const q = queue();
+    const waiting = q.enqueue("episode", "c1");
+    expect(q.requestCancel(waiting.id)).toBe(true);
+    expect(q.get(waiting.id)).toMatchObject({ state: "failed", error: "cancelled by a person", cancelRequested: false });
+    q.enqueue("episode", "c2");
+    const { job, lease } = q.claim()!;
+    expect(q.requestCancel(job.id)).toBe(true);
+    expect(q.cancellationRequested(job.id)).toBe(true);
+    q.cancel(lease);
+    expect(q.get(job.id)).toMatchObject({ state: "failed", error: "cancelled by a person", cancelRequested: false });
+    expect(q.requestCancel(job.id)).toBe(false); // finished
+  });
+});

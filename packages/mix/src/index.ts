@@ -9,3 +9,4 @@ export * from "./render.js";
 export * from "./sfx-build.js";
 export * from "./timeline.js";
 export * from "./transcript.js";
+export * from "./verify.js";

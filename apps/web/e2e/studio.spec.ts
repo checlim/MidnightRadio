@@ -38,7 +38,7 @@ test.describe("the studio (stub providers)", () => {
     worker = spawn("node", ["--import", "tsx", "src/main.ts"], { cwd: join(import.meta.dirname, "../../worker"), env: { ...process.env, ...STUDIO_ENV }, stdio: ["ignore", "pipe", "pipe"], detached: true });
     worker.stdout!.on("data", (d: Buffer) => workerLog.push(d.toString()));
     worker.stderr!.on("data", (d: Buffer) => workerLog.push(d.toString()));
-    await expect.poll(() => workerLog.join(""), { timeout: 30_000 }).toContain('"jobKinds":["episode"]');
+    await expect.poll(() => workerLog.join(""), { timeout: 30_000 }).toContain('"jobKinds":["episode","sound-design"]');
   });
   test.afterAll(async () => {
     if (worker?.pid && worker.exitCode === null) process.kill(-worker.pid, "SIGTERM");

@@ -31,6 +31,8 @@ export interface AdaptationRecord {
   message?: string;
   providerId: string;
   attempts: StoredAttempt[];
+  /** The sound-library snapshot the attempts were checked against (sound design); none for legacy runs. */
+  sfxSnapshotId?: string | null;
 }
 
 export interface StoredScript {
@@ -40,6 +42,11 @@ export interface StoredScript {
   script: unknown | null;
   validation: unknown | null;
   fidelity: number | null;
+  /** 'adaptation' (from the chapter) or 'sound_design' (cues added to a saved script). */
+  origin: "adaptation" | "sound_design";
+  parentId: string | null;
+  /** The sound-library snapshot the Script's cues were checked against; null for legacy Scripts. */
+  sfxSnapshotId: string | null;
 }
 
 /** One stored attempt from an outcome attempt record: decides its status. */
@@ -61,14 +68,15 @@ export function writeAdaptation(db: DatabaseSync, chapterId: string, record: Ada
   if (record.status === "failed" && record.attempts.some((a) => a.status === "valid")) throw new Error("a failed chapter cannot have a valid attempt");
 
   const { v } = db.prepare("SELECT COALESCE(MAX(version), 0) AS v FROM scripts WHERE chapter_id = ?").get(chapterId) as { v: number };
-  const insert = db.prepare("INSERT INTO scripts (id, chapter_id, version, json, validation_json, fidelity, status) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const insert = db.prepare("INSERT INTO scripts (id, chapter_id, version, json, validation_json, fidelity, status, sfx_snapshot_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+  const snapshot = record.sfxSnapshotId ?? null;
   const written: StoredScript[] = [];
   record.attempts.forEach((a, i) => {
     const id = newId();
     const version = Number(v) + i + 1;
     const validation = { attempt: a.attempt, providerId: record.providerId, requestId: a.requestId ?? null, report: a.report, issues: a.issues };
-    insert.run(id, chapterId, version, JSON.stringify(a.script), JSON.stringify(validation), a.fidelity, a.status);
-    written.push({ id, version, status: a.status, script: a.script, validation, fidelity: a.fidelity });
+    insert.run(id, chapterId, version, JSON.stringify(a.script), JSON.stringify(validation), a.fidelity, a.status, snapshot);
+    written.push({ id, version, status: a.status, script: a.script, validation, fidelity: a.fidelity, origin: "adaptation", parentId: null, sfxSnapshotId: snapshot });
   });
   db.prepare("UPDATE chapters SET status = ? WHERE id = ?").run(record.status, chapterId);
   return written;
@@ -87,17 +95,74 @@ export function saveAdaptation(db: DatabaseSync, chapterId: string, record: Adap
   }
 }
 
+/**
+ * Store a sound-design revision of a valid Script: the same speech with cues added, checked
+ * against `sfxSnapshotId`. It becomes the chapter's newest valid Script; the parent is kept.
+ * Does not open a transaction (call it inside a fenced publish).
+ */
+export function writeSoundDesignRevision(
+  db: DatabaseSync,
+  chapterId: string,
+  r: { parentId: string; script: unknown; validation: unknown; fidelity: number | null; sfxSnapshotId: string },
+  newId: () => string = randomUUID,
+): StoredScript {
+  const parent = db.prepare("SELECT id FROM scripts WHERE id = ? AND chapter_id = ? AND status = 'valid'").get(r.parentId, chapterId);
+  if (!parent) throw new Error(`script ${r.parentId} is not a valid script of chapter ${chapterId}`);
+  const { v } = db.prepare("SELECT COALESCE(MAX(version), 0) AS v FROM scripts WHERE chapter_id = ?").get(chapterId) as { v: number };
+  const id = newId();
+  const version = Number(v) + 1;
+  db.prepare("INSERT INTO scripts (id, chapter_id, version, json, validation_json, fidelity, status, origin, parent_id, sfx_snapshot_id) VALUES (?, ?, ?, ?, ?, ?, 'valid', 'sound_design', ?, ?)").run(
+    id,
+    chapterId,
+    version,
+    JSON.stringify(r.script),
+    JSON.stringify(r.validation),
+    r.fidelity,
+    r.parentId,
+    r.sfxSnapshotId,
+  );
+  return { id, version, status: "valid", script: r.script, validation: r.validation, fidelity: r.fidelity, origin: "sound_design", parentId: r.parentId, sfxSnapshotId: r.sfxSnapshotId };
+}
+
 /** The chapter's newest valid Script: the one rendering uses. Undefined if it has none. */
 export function loadValidScript(db: DatabaseSync, chapterId: string): StoredScript | undefined {
   const row = db
-    .prepare("SELECT id, version, status, json, validation_json AS validation, fidelity FROM scripts WHERE chapter_id = ? AND status = 'valid' ORDER BY version DESC LIMIT 1")
-    .get(chapterId) as { id: string; version: number; status: ScriptStatus; json: string; validation: string | null; fidelity: number | null } | undefined;
-  if (!row) return undefined;
-  return { id: row.id, version: Number(row.version), status: row.status, script: JSON.parse(row.json), validation: row.validation === null ? null : JSON.parse(row.validation), fidelity: row.fidelity };
+    .prepare("SELECT id, version, status, json, validation_json AS validation, fidelity, origin, parent_id, sfx_snapshot_id FROM scripts WHERE chapter_id = ? AND status = 'valid' ORDER BY version DESC LIMIT 1")
+    .get(chapterId) as ScriptRow | undefined;
+  return row && toStored(row);
 }
 
 /** Every stored version of the chapter's Script, oldest first, for review. */
 export function listScripts(db: DatabaseSync, chapterId: string): StoredScript[] {
-  const rows = db.prepare("SELECT id, version, status, json, validation_json AS validation, fidelity FROM scripts WHERE chapter_id = ? ORDER BY version").all(chapterId) as { id: string; version: number; status: ScriptStatus; json: string; validation: string | null; fidelity: number | null }[];
-  return rows.map((r) => ({ id: r.id, version: Number(r.version), status: r.status, script: JSON.parse(r.json), validation: r.validation === null ? null : JSON.parse(r.validation), fidelity: r.fidelity }));
+  const rows = db.prepare("SELECT id, version, status, json, validation_json AS validation, fidelity, origin, parent_id, sfx_snapshot_id FROM scripts WHERE chapter_id = ? ORDER BY version").all(chapterId) as unknown as ScriptRow[];
+  return rows.map(toStored);
 }
+
+/** A stored Script by id. */
+export function loadScript(db: DatabaseSync, scriptId: string): StoredScript | undefined {
+  const row = db.prepare("SELECT id, version, status, json, validation_json AS validation, fidelity, origin, parent_id, sfx_snapshot_id FROM scripts WHERE id = ?").get(scriptId) as ScriptRow | undefined;
+  return row && toStored(row);
+}
+
+interface ScriptRow {
+  id: string;
+  version: number;
+  status: ScriptStatus;
+  json: string;
+  validation: string | null;
+  fidelity: number | null;
+  origin: "adaptation" | "sound_design";
+  parent_id: string | null;
+  sfx_snapshot_id: string | null;
+}
+const toStored = (r: ScriptRow): StoredScript => ({
+  id: r.id,
+  version: Number(r.version),
+  status: r.status,
+  script: JSON.parse(r.json),
+  validation: r.validation === null ? null : JSON.parse(r.validation),
+  fidelity: r.fidelity,
+  origin: r.origin,
+  parentId: r.parent_id,
+  sfxSnapshotId: r.sfx_snapshot_id,
+});

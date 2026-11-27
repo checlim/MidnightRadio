@@ -17,6 +17,25 @@ export interface EpisodeView {
   message: string | null;
   linesRendered: number;
   linesTotal: number;
+  revision: number | null;
+  soundDesigned: boolean;
+  hasScript: boolean;
+  job: null | {
+    kind: "episode" | "sound-design";
+    state: "queued" | "running" | "done" | "failed" | "over_budget";
+    message: string | null;
+    cancelRequested: boolean;
+    soundDesign: boolean;
+    progress: Partial<Record<Stage, StageView>>;
+  };
+}
+export const STAGES = ["library", "script", "speech", "mix"] as const;
+export type Stage = (typeof STAGES)[number];
+export interface StageView {
+  state: "pending" | "running" | "done" | "skipped" | "failed";
+  done: number;
+  total: number;
+  message: string | null;
 }
 
 export interface CharacterView {
@@ -75,14 +94,37 @@ export function stateLabel(e: EpisodeView): string {
     case "failed":
       return "Could not be made";
     case "ready":
-      return "On air";
+      return e.revision !== null ? `On air (revision ${e.revision}${e.soundDesigned ? ", with sound design" : ""})` : "On air";
     case "stale":
       return "Needs re-recording";
   }
 }
 
+/** Whether the episode has a job waiting or running (generation or a remix). */
+export const jobActive = (e: EpisodeView): boolean => e.job?.state === "queued" || e.job?.state === "running";
 /** Keep polling while any episode is waiting or being made. */
-export const shouldPoll = (book: BookView | null): boolean => !!book?.chapters.some((c) => c.episodes.some((e) => e.state === "queued" || e.state === "running"));
+export const shouldPoll = (book: BookView | null): boolean => !!book?.chapters.some((c) => c.episodes.some((e) => e.state === "queued" || e.state === "running" || jobActive(e)));
+const STAGE_NAMES: Record<Stage, string> = { library: "Sound library", script: "Script", speech: "Speech", mix: "Mix" };
+const STATE_NAMES: Record<StageView["state"], string> = { pending: "waiting", running: "working", done: "done", skipped: "skipped", failed: "failed" };
+/**
+ * One line per stage of a sound-designed job (library, script, speech, mix), each with its own
+ * progress, in order. Empty for jobs of the original flow, which report no stages.
+ */
+export function stageLines(e: EpisodeView): { stage: Stage; text: string; state: StageView["state"] }[] {
+  const p = e.job?.progress ?? {};
+  return STAGES.flatMap((stage) => {
+    const v = p[stage];
+    if (!v) return [];
+    const count = v.total > 0 ? ` ${v.done}/${v.total}` : "";
+    return [{ stage, state: v.state, text: `${STAGE_NAMES[stage]}: ${STATE_NAMES[v.state]}${count}${v.message ? ` · ${v.message}` : ""}` }];
+  });
+}
+/** The chosen chapters whose episodes all have a saved Script, so sounds can be added. */
+export const remixableChapters = (book: BookView, chosen: ReadonlySet<number>): number[] =>
+  book.chapters.filter((c) => chosen.has(c.number) && c.episodes.length > 0 && c.episodes.every((e) => e.hasScript)).map((c) => c.number);
+/** The chosen chapters with a job that can be cancelled. */
+export const cancellableChapters = (book: BookView, chosen: ReadonlySet<number>): number[] =>
+  book.chapters.filter((c) => chosen.has(c.number) && c.episodes.some((e) => jobActive(e) && !e.job!.cancelRequested)).map((c) => c.number);
 
 /** Chapters that still have something to make. */
 export const unfinishedChapters = (book: BookView): number[] => book.chapters.filter((c) => c.episodes.some((e) => e.state !== "ready")).map((c) => c.number);

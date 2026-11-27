@@ -213,6 +213,98 @@ CREATE INDEX segments_speaker ON segments(speaker) WHERE speaker IS NOT NULL;
 ALTER TABLE cast_members ADD COLUMN first_chapter_idx INTEGER CHECK (first_chapter_idx IS NULL OR first_chapter_idx >= 0);
 `,
   },
+  {
+    version: 6,
+    name: "sound design: job options and progress, sound library snapshots and takes, script and episode revisions",
+    sql: /* sql */ `
+-- Options a job was queued with (e.g. {"soundDesign": true}). NULL: a job from before this
+-- migration, run exactly as before.
+ALTER TABLE jobs ADD COLUMN options_json TEXT CHECK (options_json IS NULL OR json_valid(options_json));
+-- Set by a person cancelling the job; a running job stops at its next heartbeat.
+ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1));
+-- The sound-library snapshot a job is working from, bound when it starts; kept until it ends.
+ALTER TABLE jobs ADD COLUMN sfx_snapshot_id TEXT;
+
+-- What each stage of a job has done, for the Studio: preparing the sound library, the script,
+-- speech and mixing are reported separately.
+CREATE TABLE job_progress (
+  job_id      TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  stage       TEXT NOT NULL CHECK (stage IN ('library', 'script', 'speech', 'mix')),
+  state       TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done', 'skipped', 'failed')),
+  done        INTEGER NOT NULL DEFAULT 0 CHECK (done >= 0),
+  total       INTEGER NOT NULL DEFAULT 0 CHECK (total >= 0),
+  message     TEXT,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (job_id, stage)
+);
+
+-- One generated sound-effect take. key = sha256 of the model identity, prompt, duration, seed and
+-- take number; it is also the Idempotency-Key sent to the server, so a request whose answer was
+-- lost is reconciled, not submitted as new work. 'inflight' rows carry the builder's lease.
+CREATE TABLE sfx_takes (
+  key           TEXT PRIMARY KEY CHECK (length(key) = 64),
+  cue_id        TEXT NOT NULL,
+  take          INTEGER NOT NULL CHECK (take >= 1),
+  prompt        TEXT NOT NULL,
+  duration_sec  REAL NOT NULL,
+  seed          INTEGER NOT NULL,
+  model_json    TEXT NOT NULL CHECK (json_valid(model_json)),
+  state         TEXT NOT NULL CHECK (state IN ('inflight', 'done', 'failed')),
+  attempts      INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  lease_until   INTEGER,
+  file          TEXT,
+  sha256        TEXT,
+  error         TEXT,
+  updated_at    INTEGER NOT NULL,
+  CHECK ((state = 'done') = (file IS NOT NULL AND sha256 IS NOT NULL))
+);
+CREATE INDEX sfx_takes_cue ON sfx_takes(cue_id, take);
+
+-- Published, immutable sound-library snapshots. Jobs mix from the snapshot their script was
+-- checked against; at most one is current.
+CREATE TABLE sfx_snapshots (
+  id           TEXT PRIMARY KEY,
+  dir          TEXT NOT NULL,
+  prompts_sha  TEXT NOT NULL,
+  model_json   TEXT CHECK (model_json IS NULL OR json_valid(model_json)),
+  report_json  TEXT NOT NULL CHECK (json_valid(report_json)),
+  is_current   INTEGER NOT NULL DEFAULT 0 CHECK (is_current IN (0, 1)),
+  created_at   INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX sfx_snapshots_current ON sfx_snapshots(is_current) WHERE is_current = 1;
+
+-- One builder of the shared library at a time, across processes.
+CREATE TABLE library_locks (
+  name         TEXT PRIMARY KEY,
+  holder       TEXT NOT NULL,
+  lease_until  INTEGER NOT NULL
+);
+
+-- Script revisions: 'adaptation' (written from the chapter) or 'sound_design' (a saved script
+-- with cues added; its speech is identical to the parent's, checked in code).
+ALTER TABLE scripts ADD COLUMN origin TEXT NOT NULL DEFAULT 'adaptation' CHECK (origin IN ('adaptation', 'sound_design'));
+ALTER TABLE scripts ADD COLUMN parent_id TEXT REFERENCES scripts(id) ON DELETE SET NULL;
+ALTER TABLE scripts ADD COLUMN sfx_snapshot_id TEXT;
+
+-- Every verified mix of an episode. The episode row points at the one on air; earlier ones stay
+-- playable until a replacement has passed every check.
+CREATE TABLE episode_revisions (
+  id            TEXT PRIMARY KEY,
+  chapter_id    TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  revision      INTEGER NOT NULL CHECK (revision >= 1),
+  script_id     TEXT NOT NULL REFERENCES scripts(id),
+  snapshot_id   TEXT,
+  dir           TEXT NOT NULL,
+  report_json   TEXT NOT NULL CHECK (json_valid(report_json)),
+  duration_ms   INTEGER NOT NULL CHECK (duration_ms > 0),
+  lufs          REAL NOT NULL,
+  true_peak     REAL NOT NULL,
+  created_at    INTEGER NOT NULL,
+  UNIQUE (chapter_id, revision)
+);
+ALTER TABLE episodes ADD COLUMN revision_id TEXT REFERENCES episode_revisions(id) ON DELETE SET NULL;
+`,
+  },
 ];
 
 /**
