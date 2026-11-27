@@ -66,6 +66,13 @@ describe("adaptWithRepair", () => {
     expect(provider.requests).toHaveLength(1);
   });
 
+  it("accepts a fenced script on the first call (a provider that does not enforce the schema)", async () => {
+    const provider = scripted("```json\n" + GOOD + "\n```");
+    const out = await run(provider);
+    expect(out).toMatchObject({ status: "valid", attempts: [{ attempt: 1 }] });
+    expect(provider.requests).toHaveLength(1);
+  });
+
   it("repairs with the gate's problems: missing quotations and invented lines are sent back", async () => {
     const provider = scripted(MISSING, INVENTED, GOOD);
     const out = await run(provider);

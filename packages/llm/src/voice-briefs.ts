@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { nameKey } from "@midnight-radio/core";
+import { nameKey, parseModelJson } from "@midnight-radio/core";
 import { BudgetExceededError, type BudgetLedger } from "@midnight-radio/db";
 import { z } from "zod";
 import { providerSchema } from "./casting.js";
@@ -87,7 +87,7 @@ function userPrompt(book: VoiceBriefOptions["book"], batch: BriefCharacter[]): s
 export function checkBriefReply(text: string, batch: readonly BriefCharacter[]): { ok: true; briefs: Map<string, string> } | { ok: false; error: string } {
   let json: unknown;
   try {
-    json = JSON.parse(text);
+    json = parseModelJson(text, "voices");
   } catch {
     return { ok: false, error: "it was not JSON" };
   }

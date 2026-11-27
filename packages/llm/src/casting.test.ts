@@ -137,7 +137,7 @@ describe("extractCharacters", () => {
   });
 
   it("gives up on a chunk after maxAttempts invalid replies", async () => {
-    const provider = new StubLlmProvider(() => "[]");
+    const provider = new StubLlmProvider(() => JSON.stringify({ people: [] })); // ("[]" is now read as "no characters")
     await expect(extractCharacters({ provider, ledger, bookId: "b1", chapters, maxAttempts: 2, delay: noDelay })).rejects.toThrow(CastingError);
     expect(provider.requests).toHaveLength(2);
   });
@@ -204,6 +204,25 @@ describe("extractCharacters", () => {
     });
     await expect(extractCharacters({ provider, ledger, bookId: "b1", chapters, signal: ctrl.signal, delay: noDelay })).rejects.toThrow();
     expect(provider.requests).toHaveLength(1);
+  });
+});
+
+describe("replies from providers that do not enforce the schema", () => {
+  it("accepts a bare array or a fenced reply on the first call, with no repair", async () => {
+    const replies = [JSON.stringify([character("Jonathan Harker", { speaks: true })]), "```json\n" + reply(character("Count Dracula", { speaks: true })) + "\n```"];
+    const provider = new StubLlmProvider((_req, call) => replies[call - 1]!);
+    const retries: unknown[] = [];
+    const { inventory } = await extractCharacters({ provider, ledger, bookId: "b1", chapters, delay: noDelay, onRetry: (r) => void retries.push(r) });
+    expect(provider.requests).toHaveLength(2);
+    expect(retries).toEqual([]);
+    expect(inventory.map((c) => c.name).sort()).toEqual(["Count Dracula", "Jonathan Harker"]);
+  });
+
+  it("still checks every character in a bare array", async () => {
+    const provider = new StubLlmProvider((_req, call) => (call === 1 ? JSON.stringify([{ name: "Jonathan" }]) : reply(character("Jonathan Harker"))));
+    const retries: { reason: string }[] = [];
+    await extractCharacters({ provider, ledger, bookId: "b1", chapters: chapters.slice(0, 1), delay: noDelay, onRetry: (r) => void retries.push(r) });
+    expect(retries.map((r) => r.reason)).toEqual([expect.stringMatching(/^the reply was not a valid character list \(characters\.0\./)]);
   });
 });
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseModelJson } from "./model-json.js";
 import { SceneSchema, ScriptSchema, SegmentSchema, type Script, type Segment } from "./schema.js";
 import { checkVerbatimQuotes } from "./verbatim.js";
 
@@ -94,7 +95,7 @@ export type AdaptationCheck = { ok: true; script: Script } | { ok: false; issues
 export function checkAdaptationReply(text: string, episode: EpisodeInfo): AdaptationCheck {
   let json: unknown;
   try {
-    json = JSON.parse(text);
+    json = parseModelJson(text);
   } catch {
     return { ok: false, issues: [{ path: "(reply)", message: "the reply was not valid JSON" }] };
   }

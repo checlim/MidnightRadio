@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { ChunkExtractionSchema, buildInventory, type ChunkEvidence, type InventoryCharacter } from "@midnight-radio/core";
+import { ChunkExtractionSchema, buildInventory, parseModelJson, type ChunkEvidence, type InventoryCharacter } from "@midnight-radio/core";
 import { BudgetExceededError, type BudgetLedger } from "@midnight-radio/db";
 import { z } from "zod";
 import { LlmError, estimateTokens, type LlmProvider, type LlmRequest, type LlmResponse } from "./provider.js";
@@ -267,7 +267,7 @@ export async function extractCharacters(opts: ExtractOptions): Promise<ExtractRe
 function parseReply(text: string): { ok: true; characters: z.infer<typeof ChunkExtractionSchema>["characters"] } | { ok: false; error: string } {
   let json: unknown;
   try {
-    json = JSON.parse(text);
+    json = parseModelJson(text, "characters");
   } catch {
     return { ok: false, error: "it was not JSON" };
   }

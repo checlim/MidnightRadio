@@ -38,6 +38,12 @@ describe("voice briefs", () => {
     expect(checkBriefReply("not json", batch)).toEqual({ ok: false, error: "it was not JSON" });
   });
 
+  it("accepts a bare array or a fenced reply from a provider that does not enforce the schema", () => {
+    const batch = [ch("Count Dracula")];
+    expect(checkBriefReply(JSON.stringify([good("Count Dracula")]), batch)).toMatchObject({ ok: true });
+    expect(checkBriefReply("```json\n" + JSON.stringify({ voices: [good("Count Dracula")] }) + "\n```", batch)).toMatchObject({ ok: true });
+  });
+
   it("asks in batches, metered, and sends back what was wrong until the reply is usable", async () => {
     const characters = Array.from({ length: BRIEF_BATCH + 3 }, (_, i) => ch(`Person ${String(i).padStart(2, "0")}`));
     let first = true;

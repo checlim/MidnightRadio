@@ -10,3 +10,4 @@ export * from "./verbatim.js";
 export * from "./voice.js";
 export * from "./stations.js";
 export * from "./book-voices.js";
+export * from "./model-json.js";
