@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { fetchWithTimeouts } from "./long-fetch.js";
 import { TtsError, rejected } from "./provider.js";
 import { LOCAL_AUDIO_API_VERSION, SPEECH_LANGUAGE, assertServiceUrl, authHeaders, describeFetchFailure, failureFromResponse, readLimited, unavailable } from "./qwen-provider.js";
 import { WavError, encodeWav, validateWav } from "./wav.js";
@@ -111,7 +112,8 @@ export class QwenVoiceDesigner implements VoiceDesigner {
     if (d.model !== pin.name) throw unavailable(`the speech service designs voices with "${d.model}", not the pinned "${pin.name}"`);
     if (d.revision !== pin.revision) throw unavailable(`the voice-design revision "${d.revision}" is not the pinned "${pin.revision}"`);
     if (pin.weightsSha256 && d.weightsSha256 !== pin.weightsSha256) throw unavailable("the voice-design weights are not the pinned ones");
-    return new QwenVoiceDesigner({ model: d.model, revision: d.revision, ...(d.weightsSha256 ? { weightsSha256: d.weightsSha256 } : {}) }, base, opts.token, opts.timeoutMs ?? 10 * 60_000, fetchImpl);
+    const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
+    return new QwenVoiceDesigner({ model: d.model, revision: d.revision, ...(d.weightsSha256 ? { weightsSha256: d.weightsSha256 } : {}) }, base, opts.token, timeoutMs, opts.fetch ?? fetchWithTimeouts(timeoutMs));
   }
 
   async design(req: DesignRequest, opts: { signal?: AbortSignal } = {}): Promise<Buffer> {

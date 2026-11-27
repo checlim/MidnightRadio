@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ChunkCharacter } from "@midnight-radio/core";
 import { BudgetExceededError, BudgetLedger, openDb, type BudgetConfig } from "@midnight-radio/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CASTING_SYSTEM_PROMPT, CastingError, castingUserPrompt, chunkBook, extractCharacters, providerSchema, type CastingChapter } from "./casting.js";
+import { CASTING_SYSTEM_PROMPT, CastingError, castingUserPrompt, chunkBook, chunkTextHash, extractCharacters, providerSchema, type CastingChapter, type StoredChunk } from "./casting.js";
 import { LlmError, type LlmRequest } from "./provider.js";
 import { StubLlmProvider } from "./stub.js";
 import { ChunkExtractionSchema } from "@midnight-radio/core";
@@ -204,6 +204,40 @@ describe("extractCharacters", () => {
     });
     await expect(extractCharacters({ provider, ledger, bookId: "b1", chapters, signal: ctrl.signal, delay: noDelay })).rejects.toThrow();
     expect(provider.requests).toHaveLength(1);
+  });
+});
+
+describe("resuming casting", () => {
+  const model = () => new StubLlmProvider((req) => (req.user.includes('chapter="1"') ? reply(character("Jonathan Harker", { speaks: true })) : reply(character("Count Dracula", { speaks: true }))));
+
+  it("saves each excerpt as it is read, and a rerun skips the excerpts already read", async () => {
+    const saved: StoredChunk[] = [];
+    const first = model();
+    const full = await extractCharacters({ provider: first, ledger, bookId: "b1", chapters, delay: noDelay, onChunk: (c) => void saved.push(c) });
+    expect(saved.map((c) => [c.chunk, c.chapterIdx, c.textSha256])).toEqual(chunkBook(chapters).map((c) => [c.chunk, c.chapterIdx, chunkTextHash(c.text)]));
+
+    const again = model();
+    const resumed = await extractCharacters({ provider: again, ledger, bookId: "b1", chapters, delay: noDelay, previous: saved.slice(0, 1) });
+    expect(again.requests.map((r) => r.user.match(/chapter="(\d+)"/)![1])).toEqual(["2"]); // only the excerpt not yet read
+    expect(resumed.inventory).toEqual(full.inventory);
+    const none = model();
+    expect((await extractCharacters({ provider: none, ledger, bookId: "b1", chapters, delay: noDelay, previous: saved })).inventory).toEqual(full.inventory);
+    expect(none.requests).toEqual([]);
+  });
+
+  it("reads an excerpt again when its text changed, and reports each retry with its reason", async () => {
+    const saved: StoredChunk[] = [];
+    await extractCharacters({ provider: model(), ledger, bookId: "b1", chapters, delay: noDelay, onChunk: (c) => void saved.push(c) });
+    const edited = [chapters[0]!, { idx: 1, canonicalText: `${chapters[1]!.canonicalText} Mina waited.` }];
+    let fails = 1;
+    const flaky = new StubLlmProvider((req) => {
+      if (fails-- > 0) throw new LlmError("LLM request failed to reach the provider (ECONNRESET: the connection was reset)", false, true);
+      return req.user.includes('chapter="1"') ? reply(character("Jonathan Harker")) : reply(character("Count Dracula"));
+    });
+    const retries: unknown[] = [];
+    await extractCharacters({ provider: flaky, ledger, bookId: "b1", chapters: edited, delay: noDelay, previous: saved, onRetry: (r) => void retries.push(r) });
+    expect(flaky.requests.map((r) => r.user.match(/chapter="(\d+)"/)![1])).toEqual(["2", "2"]);
+    expect(retries).toEqual([{ chunk: 1, total: 2, attempt: 1, reason: "LLM request failed to reach the provider (ECONNRESET: the connection was reset)" }]);
   });
 });
 

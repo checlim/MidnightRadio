@@ -9,7 +9,7 @@ import { OverBudgetError, loadCast, loadValidScript, storedAttempt, writeAdaptat
 import { LlmError, VoiceBriefError, adaptWithRepair, extractCharacters, writeVoiceBriefs, type LlmProvider } from "@midnight-radio/llm";
 import { mixEpisode, segmentsInOrder, type AudioFile, type FfmpegOptions } from "@midnight-radio/mix";
 import { RenderCache, TtsError, planRender, renderSegments, type SegmentOutcome, type TtsProvider, type VoiceDesignPin, type VoiceDesigner } from "@midnight-radio/tts";
-import { VoiceDesignError, designBookVoices, loadBookCatalogue, readVoicesPlan, writeVoicesPlan } from "./book-voices.js";
+import { VoiceDesignError, designBookVoices, loadBookCatalogue, readCastingProgress, readVoicesPlan, writeCastingProgress, writeVoicesPlan } from "./book-voices.js";
 import { promptCast, speechLines, validationCast } from "./cast-lines.js";
 import type { BookPlan, PlannedEpisode } from "./plan.js";
 import { mergeStations, readStations, writeStations } from "./stations.js";
@@ -175,12 +175,21 @@ export async function castBook(plan: BookPlan, deps: GenerateDeps): Promise<Stor
   if (!voicesPlan) {
     if (!deps.llm) throw new GenerateError("the book has no Cast yet and no LLM is configured");
     const chapters = [...new Map(plan.episodes.map((e) => [e.chapter.idx, { idx: e.chapter.idx, canonicalText: e.chapter.canonicalText }])).values()];
-    deps.log(`casting: reading the whole book (${chapters.length} chapters) for its characters`);
+    // Each excerpt's characters are saved as soon as they arrive, so a rerun continues where this one stopped.
+    const progress = new Map((await readCastingProgress(deps.voicesRoot, plan.bookId)).map((c) => [c.chunk, c]));
+    deps.log(progress.size > 0 ? `casting: resuming; ${progress.size} excerpt(s) already read` : `casting: reading the whole book (${chapters.length} chapters) for its characters`);
     const extracted = await extractCharacters({
       provider: deps.llm,
       ledger: deps.ledger,
       bookId: plan.bookId,
       chapters,
+      previous: [...progress.values()],
+      onChunk: async (c) => {
+        progress.set(c.chunk, c);
+        deps.fence?.();
+        await writeCastingProgress(deps.voicesRoot, plan.bookId, [...progress.values()]);
+      },
+      onRetry: (r) => deps.log(`casting: excerpt ${r.chunk + 1}/${r.total}, attempt ${r.attempt} failed (${r.reason}); retrying`),
       onProgress: (done, total) => deps.log(`casting: ${done}/${total} excerpts read`),
       ...jobFields(deps),
       ...(deps.delay ? { delay: deps.delay } : {}),

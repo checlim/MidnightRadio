@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { requireClonable, transcriptHash, type ClonableCatalogue, type Voice, type VoiceCatalogue } from "@midnight-radio/core";
 import { z } from "zod";
+import { fetchWithTimeouts } from "./long-fetch.js";
 import { rejected, SynthesisRequestSchema, TtsError, type ProviderIdentity, type SynthesisRequest, type SynthesizeOptions, type TtsProvider } from "./provider.js";
 import { describeError } from "./redact.js";
 import { WAV_SAMPLE_RATE } from "./wav.js";
@@ -119,7 +120,7 @@ export class QwenTtsProvider implements TtsProvider {
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.msPerChar = opts.msPerChar ?? ASSUMED_MS_PER_CHAR;
     this.maxBytes = opts.maxWavBytes ?? DEFAULT_MAX_WAV_BYTES;
-    this.fetchImpl = opts.fetch ?? fetch;
+    this.fetchImpl = opts.fetch ?? fetchWithTimeouts(this.timeoutMs); // a long line can take minutes to render
     // The weights hash is part of the identity, so audio from different weights never shares a cache entry.
     this.identity = {
       provider: "qwen3-tts",

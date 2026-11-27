@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { VoiceCatalogueSchema, bookVoiceCatalogue, catalogueHash, designedVoiceId, requireClonable, voiceTraits, type ClonableCatalogue, type InventoryCharacter } from "@midnight-radio/core";
+import { ChunkCharacterSchema, VoiceCatalogueSchema, bookVoiceCatalogue, catalogueHash, designedVoiceId, requireClonable, voiceTraits, type ClonableCatalogue, type InventoryCharacter } from "@midnight-radio/core";
 import { DESIGN_SENTENCE, checkDesignedClip, type VoiceDesignPin, type VoiceDesigner } from "@midnight-radio/tts";
 import { z } from "zod";
 
@@ -79,6 +79,28 @@ export async function readVoicesPlan(voicesRoot: string, bookId: string): Promis
 export async function writeVoicesPlan(voicesRoot: string, bookId: string, inventory: InventoryCharacter[], briefs: ReadonlyMap<string, string>): Promise<void> {
   const plan: VoicesPlan = { version: 1, inventory, briefs: Object.fromEntries(briefs) };
   await writeAtomic(join(bookVoicesDir(voicesRoot, bookId), "voices-plan.json"), `${JSON.stringify(plan, null, 2)}\n`);
+}
+
+const ProgressSchema = z.object({
+  version: z.literal(1),
+  chunks: z.array(z.object({ chunk: z.number().int().min(0), chapterIdx: z.number().int().min(0), textSha256: z.string().regex(/^[0-9a-f]{64}$/), characters: z.array(ChunkCharacterSchema).max(60) })),
+});
+export type CastingProgress = z.infer<typeof ProgressSchema>["chunks"];
+
+/**
+ * Excerpts casting has already read for a book (`casting-progress.json`), so an interrupted run
+ * resumes instead of paying for them again. A missing or unreadable file means none.
+ */
+export async function readCastingProgress(voicesRoot: string, bookId: string): Promise<CastingProgress> {
+  const path = join(bookVoicesDir(voicesRoot, bookId), "casting-progress.json");
+  if (!existsSync(path)) return [];
+  const parsed = ProgressSchema.safeParse(JSON.parse(await readFile(path, "utf8").catch(() => "null")));
+  return parsed.success ? parsed.data.chunks : [];
+}
+
+export async function writeCastingProgress(voicesRoot: string, bookId: string, chunks: CastingProgress): Promise<void> {
+  const sorted = [...chunks].sort((a, b) => a.chunk - b.chunk);
+  await writeAtomic(join(bookVoicesDir(voicesRoot, bookId), "casting-progress.json"), `${JSON.stringify({ version: 1, chunks: sorted })}\n`);
 }
 
 /** The catalogue a book's Cast is pinned to: its own, or the series catalogue for a book cast from it. */

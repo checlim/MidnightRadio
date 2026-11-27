@@ -8,7 +8,7 @@ import { STUB_VOICE_CATALOGUE, StationListSchema, designedVoiceId, type AdaptedS
 import { BudgetLedger, loadCast, openDb, type BudgetConfig, type StoredCast } from "@midnight-radio/db";
 import { ingestEpub } from "@midnight-radio/ingest";
 import { buildEpub } from "@midnight-radio/ingest/src/test-support/build-epub.js";
-import { StubLlmProvider, type LlmRequest } from "@midnight-radio/llm";
+import { LlmError, StubLlmProvider, type LlmRequest } from "@midnight-radio/llm";
 import { StubProvider, StubVoiceDesigner, TtsError, encodeWav, type QwenTtsOptions, type SynthesisRequest } from "@midnight-radio/tts";
 import { speechSpy, voiceDeps } from "./test-support.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -344,6 +344,23 @@ describe.skipIf(!hasFfmpeg)("generateBook end to end (stub model, stub voices, r
     const designs = designer.requests.length;
     await generateBook(p, { chapters: new Set([2]), charBudget: 50_000 }, deps);
     expect(designer.requests.length).toBe(designs); // voices are designed once per book
+  }, 120_000);
+
+  it("when casting fails partway, a rerun reads only the excerpts it had not read yet", async () => {
+    const p = await plan();
+    const good = model();
+    const failing = new StubLlmProvider(async (req) => {
+      if (req.jsonSchema.name === "chunk_characters" && req.user.includes('chapter="2"')) throw new LlmError("LLM request failed to reach the provider (UND_ERR_HEADERS_TIMEOUT: the provider took too long to start answering)", true, true);
+      return (await good.complete(req)).text;
+    });
+    await expect(generateBook(p, { chapters: new Set([1]), charBudget: 50_000 }, { ...deps, llm: failing })).rejects.toThrow(/UND_ERR_HEADERS_TIMEOUT/);
+    expect(logs).toEqual(expect.arrayContaining(["casting: 1/2 excerpts read", expect.stringMatching(/^casting: excerpt 2\/2, attempt 1 failed \(LLM request failed to reach the provider \(UND_ERR_HEADERS_TIMEOUT/)]));
+    const rerun = model();
+    await generateBook(p, { chapters: new Set([1]), charBudget: 50_000 }, { ...deps, llm: rerun });
+    const casting = rerun.requests.filter((r) => r.jsonSchema.name === "chunk_characters").map((r) => r.user.match(/chapter="(\d+)"/)![1]);
+    expect(casting).toEqual(["2"]);
+    expect(logs).toContain("casting: resuming; 1 excerpt(s) already read");
+    expect(loadCast(db, p.bookId)!.characters.map((c) => c.name).sort()).toEqual(["Count Dracula", "Jonathan Harker", "Mina Harker"]);
   }, 120_000);
 
   it("after a crash before the voices were designed, resumes without casting or writing briefs again", async () => {

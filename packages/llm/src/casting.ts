@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ChunkExtractionSchema, buildInventory, type ChunkEvidence, type InventoryCharacter } from "@midnight-radio/core";
 import { BudgetExceededError, type BudgetLedger } from "@midnight-radio/db";
@@ -149,7 +150,23 @@ export interface ExtractOptions {
   /** Back-off between attempts (tests pass a no-op). */
   delay?: (ms: number, signal?: AbortSignal) => Promise<unknown>;
   onProgress?: (done: number, total: number) => void;
+  /**
+   * Excerpts already read in an earlier, interrupted run. An excerpt is skipped (and not paid for
+   * again) when its index and the hash of its text match; anything else is read again.
+   */
+  previous?: readonly StoredChunk[];
+  /** Called after each excerpt is read, so the caller can save it before the next one. */
+  onChunk?: (chunk: StoredChunk) => void | Promise<void>;
+  /** Called before each retry of an excerpt, with why the last attempt failed. */
+  onRetry?: (info: { chunk: number; total: number; attempt: number; reason: string }) => void;
 }
+
+/** One excerpt's characters, with the hash of the excerpt's text so a resume can tell it is the same excerpt. */
+export interface StoredChunk extends ChunkEvidence {
+  textSha256: string;
+}
+
+export const chunkTextHash = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 
 export interface ExtractResult {
   inventory: InventoryCharacter[];
@@ -172,8 +189,17 @@ export async function extractCharacters(opts: ExtractOptions): Promise<ExtractRe
   const delay = opts.delay ?? ((ms: number, signal?: AbortSignal) => sleep(ms, undefined, { signal }));
   const evidence: ChunkEvidence[] = [];
 
+  const previous = new Map((opts.previous ?? []).map((p) => [p.chunk, p]));
+
   for (const chunk of chunks) {
     opts.signal?.throwIfAborted();
+    const textSha256 = chunkTextHash(chunk.text);
+    const done = previous.get(chunk.chunk);
+    if (done && done.textSha256 === textSha256 && done.chapterIdx === chunk.chapterIdx) {
+      evidence.push({ chunk: chunk.chunk, chapterIdx: chunk.chapterIdx, characters: done.characters });
+      opts.onProgress?.(evidence.length, chunks.length);
+      continue;
+    }
     const user = castingUserPrompt(chunk);
     let feedback = "";
     for (let attempt = 1; ; attempt++) {
@@ -208,18 +234,22 @@ export async function extractCharacters(opts: ExtractOptions): Promise<ExtractRe
         );
       } catch (err) {
         if (err instanceof BudgetExceededError || !(err instanceof LlmError) || !err.retryable || attempt >= maxAttempts) throw err;
+        opts.onRetry?.({ chunk: chunk.chunk, total: chunks.length, attempt, reason: err.message });
         await delay(1_000 * 2 ** (attempt - 1), opts.signal);
         continue;
       }
 
       const parsed = parseReply(response.text);
       if (parsed.ok) {
-        evidence.push({ chunk: chunk.chunk, chapterIdx: chunk.chapterIdx, characters: parsed.characters });
+        const found = { chunk: chunk.chunk, chapterIdx: chunk.chapterIdx, characters: parsed.characters };
+        evidence.push(found);
+        await opts.onChunk?.({ ...found, textSha256 });
         break;
       }
       if (attempt >= maxAttempts) {
         throw new CastingError(`The model gave no valid character list for part of chapter ${chunk.chapterIdx + 1} after ${maxAttempts} attempts.`);
       }
+      opts.onRetry?.({ chunk: chunk.chunk, total: chunks.length, attempt, reason: `the reply was not a valid character list (${parsed.error})` });
       // Tell the model what was wrong (our own summary, never echoing its output).
       feedback = `Your previous reply was not valid: ${parsed.error}. Reply again with JSON that matches the schema exactly.`;
     }

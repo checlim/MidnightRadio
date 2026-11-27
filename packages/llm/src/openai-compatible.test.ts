@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { checkLlmAccess, createOpenAiCompatibleProvider, loadLlmConfig } from "./openai-compatible.js";
+import { checkLlmAccess, createOpenAiCompatibleProvider, loadLlmConfig, networkCause } from "./openai-compatible.js";
 import { LlmError, type LlmRequest } from "./provider.js";
 
 const KEY = "sk-test-SECRET-123";
@@ -140,5 +140,40 @@ describe("checkLlmAccess (no tokens spent)", () => {
       "cannot reach the LLM endpoint at LLM_BASE_URL (https://llm.example/v1)",
     ]);
     expect(messages.join(" ")).not.toContain("sk-secret");
+  });
+});
+
+describe("network failures", () => {
+  const config = { baseUrl: "https://llm.example/v1", apiKey: "sk-secret-key-123", model: "gpt-x", timeoutMs: 90_000 };
+  const req = { system: "s", user: "u", jsonSchema: { name: "x", schema: {} }, maxOutputTokens: 10 };
+  const failWith = (err: unknown) => vi.fn(async () => Promise.reject(err)) as unknown as typeof fetch;
+  const fetchFailed = (code: string, message = `connect ${code} llm.example:443 key=sk-secret-key-123`) => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(message), { code }) });
+
+  it("names the network cause and what it usually means, never the error's own text", async () => {
+    for (const [code, hint] of [
+      ["UND_ERR_HEADERS_TIMEOUT", "the provider took too long to start answering"],
+      ["ECONNRESET", "the connection was reset"],
+      ["ENOTFOUND", "the host in LLM_BASE_URL could not be found"],
+    ]) {
+      const err = await createOpenAiCompatibleProvider(config, failWith(fetchFailed(code!))).complete(req).then(() => { throw new Error("expected a failure"); }, (e: unknown) => e as LlmError);
+      expect(err).toBeInstanceOf(LlmError);
+      expect([err.message, err.retryable, err.billed]).toEqual([`LLM request failed to reach the provider (${code}: ${hint})`, true, true]);
+      expect(err.message).not.toContain("sk-secret");
+    }
+    const unknown = await createOpenAiCompatibleProvider(config, failWith(fetchFailed("EWEIRD"))).complete(req).then(() => { throw new Error("expected a failure"); }, (e: unknown) => e as LlmError);
+    expect(unknown.message).toBe("LLM request failed to reach the provider (EWEIRD)");
+    const bare = await createOpenAiCompatibleProvider(config, failWith(new TypeError("fetch failed"))).complete(req).then(() => { throw new Error("expected a failure"); }, (e: unknown) => e as LlmError);
+    expect(bare.message).toBe("LLM request failed to reach the provider");
+  });
+
+  it("says how long it waited when it timed out", async () => {
+    const err = await createOpenAiCompatibleProvider(config, failWith(Object.assign(new Error("t"), { name: "TimeoutError" }))).complete(req).then(() => { throw new Error("expected a failure"); }, (e: unknown) => e as LlmError);
+    expect(err.message).toBe("LLM request timed out after 90 s or was aborted (LLM_TIMEOUT_MS)");
+  });
+
+  it("reads only plain codes, a few levels deep", () => {
+    expect(networkCause({ cause: { cause: { code: "ECONNRESET" } } })).toBe("ECONNRESET");
+    expect(networkCause({ code: "not a code; DROP" })).toBeNull();
+    expect(networkCause("boom")).toBeNull();
   });
 });

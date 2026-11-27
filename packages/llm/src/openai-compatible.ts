@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { fetchWithTimeouts } from "./long-fetch.js";
 import { LlmError, type LlmProvider, type LlmRequest, type LlmResponse } from "./provider.js";
 
 export interface OpenAiCompatibleConfig {
@@ -82,6 +83,32 @@ const ResponseSchema = z.object({
   usage: z.object({ prompt_tokens: z.number().int().nonnegative(), completion_tokens: z.number().int().nonnegative() }).optional(),
 });
 
+/**
+ * The network error code behind a failed fetch (e.g. ECONNRESET), if it is a plain code. Only the
+ * code is reported, never the error's text, which could hold the URL or request details.
+ */
+export function networkCause(err: unknown): string | null {
+  let e: unknown = err;
+  for (let depth = 0; depth < 4 && e && typeof e === "object"; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === "string" && /^[A-Z][A-Z0-9_]{1,40}$/.test(code)) return code;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+const CAUSE_HINTS: Record<string, string> = {
+  UND_ERR_HEADERS_TIMEOUT: "the provider took too long to start answering",
+  UND_ERR_BODY_TIMEOUT: "the provider stopped sending its answer",
+  UND_ERR_SOCKET: "the connection was closed mid-request",
+  ECONNRESET: "the connection was reset",
+  ECONNREFUSED: "nothing is listening at LLM_BASE_URL",
+  ENOTFOUND: "the host in LLM_BASE_URL could not be found",
+  EAI_AGAIN: "DNS lookup failed; try again",
+  ETIMEDOUT: "the connection timed out",
+  CERT_HAS_EXPIRED: "the provider's TLS certificate has expired",
+};
+
 /** Status codes for requests the provider rejected before doing (billable) work. */
 const NOT_BILLED = new Set([400, 401, 403, 404, 409, 413, 415, 422, 429]);
 const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504]);
@@ -90,7 +117,7 @@ const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504]);
  * Chat Completions client for any OpenAI-compatible endpoint, with JSON-schema structured output.
  * Never logs; error messages never include the API key, headers or the request body.
  */
-export function createOpenAiCompatibleProvider(config: OpenAiCompatibleConfig, fetchImpl: typeof fetch = fetch): LlmProvider {
+export function createOpenAiCompatibleProvider(config: OpenAiCompatibleConfig, fetchImpl: typeof fetch = fetchWithTimeouts(config.timeoutMs)): LlmProvider {
   return {
     id: `openai-compatible:${config.model}`,
     async complete(req: LlmRequest): Promise<LlmResponse> {
@@ -115,7 +142,11 @@ export function createOpenAiCompatibleProvider(config: OpenAiCompatibleConfig, f
       } catch (err) {
         // Timeout or network failure: the provider may already have done the work.
         const timedOut = (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError";
-        throw new LlmError(timedOut ? "LLM request timed out or was aborted" : "LLM request failed to reach the provider", true, !req.signal?.aborted);
+        const cause = networkCause(err);
+        const message = timedOut
+          ? `LLM request timed out after ${Math.round(config.timeoutMs / 1000)} s or was aborted (LLM_TIMEOUT_MS)`
+          : `LLM request failed to reach the provider${cause ? ` (${cause}${CAUSE_HINTS[cause] ? `: ${CAUSE_HINTS[cause]}` : ""})` : ""}`;
+        throw new LlmError(message, true, !req.signal?.aborted);
       }
 
       if (!res.ok) {

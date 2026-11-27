@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@midnight-radio/core": "workspace:*",
-    "zod": "^4.6.7",
-    "@midnight-radio/db": "workspace:*"
+    "@midnight-radio/db": "workspace:*",
+    "undici": "^7.30.2",
+    "zod": "^4.6.7"
   }
 }
