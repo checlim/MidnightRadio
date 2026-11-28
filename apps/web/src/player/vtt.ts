@@ -71,3 +71,16 @@ export function clock(ms: number): string {
   const sec = String(s % 60).padStart(2, "0");
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
 }
+
+/**
+ * Where a scrolling list should be scrolled to show an item, moving as little as possible
+ * ("nearest"): unchanged if the item is already fully in view, otherwise just far enough to show
+ * it, preferring its top if it is taller than the list. Item positions are measured from the top of
+ * the list's content. Pure. Used instead of `scrollIntoView`, which also scrolls the page.
+ */
+export function scrollTopToReveal(view: { scrollTop: number; height: number }, item: { top: number; height: number }): number {
+  const bottom = item.top + item.height;
+  if (item.top < view.scrollTop || item.height > view.height) return item.top;
+  if (bottom > view.scrollTop + view.height) return bottom - view.height;
+  return view.scrollTop;
+}

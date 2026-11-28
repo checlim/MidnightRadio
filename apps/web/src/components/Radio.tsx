@@ -5,7 +5,7 @@ import { RadioEngine, type EngineState, type Variant } from "../player/audio-eng
 import { CAPTURE_WIDTH } from "../player/crossfade";
 import { playerKeyAction } from "../player/keyboard";
 import { BAND_KHZ, StationListSchema, clamp01, describeTuning, frequencyAt, nearestStation, stationPositions, stepStation, type Station } from "../player/stations";
-import { clock, cueIndexAt, parseVtt, searchCues, type Cue } from "../player/vtt";
+import { clock, cueIndexAt, parseVtt, scrollTopToReveal, searchCues, type Cue } from "../player/vtt";
 import { Cabinet } from "./Cabinet";
 
 /**
@@ -108,7 +108,13 @@ export function Radio() {
 
   useEffect(() => {
     if (cueIndex < 0) return;
-    listRef.current?.querySelector<HTMLElement>(`[data-cue="${cueIndex}"]`)?.scrollIntoView({ block: "nearest" });
+    // Scroll the transcript list only: scrollIntoView would also scroll the page to follow each line.
+    const list = listRef.current;
+    const item = list?.querySelector<HTMLElement>(`[data-cue="${cueIndex}"]`);
+    if (!list || !item) return;
+    const top = item.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+    const next = scrollTopToReveal({ scrollTop: list.scrollTop, height: list.clientHeight }, { top, height: item.offsetHeight });
+    if (next !== list.scrollTop) list.scrollTop = next;
   }, [cueIndex]);
 
   const togglePower = () => {

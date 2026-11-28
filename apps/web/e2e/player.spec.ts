@@ -95,6 +95,15 @@ test("jumps to a transcript line and highlights the line playing", async ({ page
   await expect(page.locator(".now-playing .speaker")).toHaveText("Jonathan Harker");
 });
 
+test("follows the line playing in the transcript without scrolling the page", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 420 }); // the transcript starts below the fold
+  await page.getByRole("button", { name: "Power" }).click(); // Playwright scrolls the button into view to click it
+  await expect(page.locator('.transcript li[aria-current="true"]')).toHaveCount(1);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const first = await page.locator('.transcript li[aria-current="true"]').innerText();
+  await expect.poll(() => page.locator('.transcript li[aria-current="true"]').innerText(), { timeout: 8_000 }).not.toBe(first); // a later line is playing
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+});
 test("announces lines to screen readers only when asked", async ({ page }) => {
   await page.getByRole("button", { name: "Power" }).click();
   const live = page.locator('[aria-live="polite"]');

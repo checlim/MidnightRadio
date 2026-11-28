@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { CAPTURE_WIDTH, STATIC_FLOOR, crossfadeGains } from "./crossfade";
 import { playerKeyAction, type KeyInput } from "./keyboard";
 import { StationListSchema, describeTuning, frequencyAt, nearestStation, stationPositions, stepStation, type Station } from "./stations";
-import { clock, cueIndexAt, parseVtt, searchCues } from "./vtt";
+import { clock, cueIndexAt, parseVtt, scrollTopToReveal, searchCues } from "./vtt";
 
 const ready = (id: string, n: number): Station => ({ status: "ready", id, book: "Dracula", author: "Bram Stoker", episodeNumber: n, title: `Chapter ${n}`, durationMs: 600_000, cleanUrl: `/episodes/${id}/episode.mp3`, amUrl: `/episodes/${id}/episode-am.mp3`, vttUrl: `/episodes/${id}/episode.vtt` });
 
@@ -123,5 +123,14 @@ describe("playerKeyAction", () => {
     expect(playerKeyAction(key("ArrowRight", {}, { ctrlKey: true }))).toBeNull();
     expect(playerKeyAction(key(" ", { tagName: "BUTTON" }))).toBeNull();
     expect(playerKeyAction(key("ArrowRight", { tagName: "BUTTON" }))).toBe("next");
+  });
+});
+describe("following the transcript", () => {
+  const view = { scrollTop: 100, height: 300 };
+  it("scrolls the list only as far as needed to show the line playing", () => {
+    expect(scrollTopToReveal(view, { top: 150, height: 40 })).toBe(100); // already in view
+    expect(scrollTopToReveal(view, { top: 60, height: 40 })).toBe(60); // above: show its top
+    expect(scrollTopToReveal(view, { top: 390, height: 40 })).toBe(130); // below: show its bottom
+    expect(scrollTopToReveal(view, { top: 500, height: 400 })).toBe(500); // taller than the list: its top
   });
 });
