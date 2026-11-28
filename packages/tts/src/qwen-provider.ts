@@ -6,7 +6,7 @@ import { z } from "zod";
 import { fetchWithTimeouts } from "./long-fetch.js";
 import { rejected, SynthesisRequestSchema, TtsError, type ProviderIdentity, type SynthesisRequest, type SynthesizeOptions, type TtsProvider } from "./provider.js";
 import { describeError } from "./redact.js";
-import { WAV_SAMPLE_RATE } from "./wav.js";
+import { WAV_BITS, WAV_CHANNELS, WAV_SAMPLE_RATE, WavError, validateWav } from "./wav.js";
 
 /**
  * Speech from a Qwen3-TTS server that implements the speech service API (`docs/tts-service-api.md`):
@@ -19,6 +19,12 @@ import { WAV_SAMPLE_RATE } from "./wav.js";
  *
  * Plain http is accepted only on loopback; any other host needs https and a token, so neither the
  * token nor the clips cross a network unencrypted. Redirects are refused.
+ *
+ * A line longer than `MAX_CHUNK_CHARS` is rendered in parts, one request after another, each
+ * well inside the per-request timeout: `splitSpeechText` cuts it at sentence ends, then spaces,
+ * and only inside an unbroken run of text at a fixed length. The parts join back to the line
+ * exactly. Each part's WAV is checked and their samples are joined into one WAV, so the caller
+ * (and the render cache, whose key is built from the whole line) still sees one line, one result.
  */
 
 export const LOCAL_AUDIO_API_VERSION = 1;
@@ -32,6 +38,75 @@ const DEFAULT_MAX_WAV_BYTES = 64 * 1024 * 1024;
  * (Qwen3-TTS 1.7B Base, bf16, MLX, Apple M2). Override with LOCAL_AUDIO_MS_PER_CHAR on other machines.
  */
 export const ASSUMED_MS_PER_CHAR = 118;
+/** Longest text sent in one request; longer lines are rendered in parts (see `splitSpeechText`). */
+export const MAX_CHUNK_CHARS = 600;
+
+/** A sentence end: . ! ? or … , any closing quotes or brackets, then the whitespace after it. */
+const SENTENCE_END = /[.!?\u2026]["'\u201d\u2019)\]]*\s+/g;
+
+/**
+ * Cut `text` into consecutive parts of at most `max` characters, so that `parts.join("") === text`.
+ * Each cut goes after the last sentence end that fits, else after the last whitespace that fits,
+ * else at `max` characters (never between the two halves of a surrogate pair). Whitespace stays
+ * at the end of the part before a cut. A part that would be only whitespace is joined to its
+ * neighbour instead, so every part has something to say; such a part can exceed `max` by that
+ * whitespace alone. Pure.
+ */
+export function splitSpeechText(text: string, max = MAX_CHUNK_CHARS): string[] {
+  if (!Number.isInteger(max) || max < 2) throw new RangeError("max must be an integer of at least 2");
+  if (text.length <= max) return [text];
+  const parts: string[] = [];
+  let start = 0;
+  while (text.length - start > max) {
+    const window = text.slice(start, start + max);
+    let cut = 0;
+    for (const m of window.matchAll(SENTENCE_END)) cut = m.index + m[0].length;
+    if (cut === 0) {
+      for (const m of window.matchAll(/\s+/g)) if (m.index > 0) cut = m.index + m[0].length;
+    }
+    if (cut === 0) {
+      cut = max;
+      const code = text.charCodeAt(start + cut - 1);
+      if (code >= 0xd800 && code <= 0xdbff) cut--; // keep a surrogate pair together
+    }
+    parts.push(text.slice(start, start + cut));
+    start += cut;
+  }
+  parts.push(text.slice(start));
+  // Fold whitespace-only parts into a neighbour (the text as a whole is never blank).
+  const out: string[] = [];
+  for (const p of parts) {
+    if (/\S/.test(p) || out.length === 0) out.push(p);
+    else out[out.length - 1] += p;
+  }
+  if (out.length > 1 && !/\S/.test(out[0]!)) out.splice(0, 2, out[0]! + out[1]!);
+  return out;
+}
+
+/** Join mono 16-bit PCM WAVs at the provider's rate into one canonical WAV. Each input must already be validated. */
+function joinWavs(parts: readonly { bytes: Buffer; dataOffset: number; dataLength: number }[]): Buffer {
+  const dataLength = parts.reduce((n, p) => n + p.dataLength, 0);
+  const out = Buffer.alloc(44 + dataLength);
+  out.write("RIFF", 0, "ascii");
+  out.writeUInt32LE(36 + dataLength, 4);
+  out.write("WAVE", 8, "ascii");
+  out.write("fmt ", 12, "ascii");
+  out.writeUInt32LE(16, 16);
+  out.writeUInt16LE(1, 20); // integer PCM
+  out.writeUInt16LE(WAV_CHANNELS, 22);
+  out.writeUInt32LE(WAV_SAMPLE_RATE, 24);
+  out.writeUInt32LE((WAV_SAMPLE_RATE * WAV_CHANNELS * WAV_BITS) / 8, 28);
+  out.writeUInt16LE((WAV_CHANNELS * WAV_BITS) / 8, 32);
+  out.writeUInt16LE(WAV_BITS, 34);
+  out.write("data", 36, "ascii");
+  out.writeUInt32LE(dataLength, 40);
+  let at = 44;
+  for (const p of parts) {
+    p.bytes.copy(out, at, p.dataOffset, p.dataOffset + p.dataLength);
+    at += p.dataLength;
+  }
+  return out;
+}
 
 export interface QwenTtsOptions {
   /** The speech server: http on loopback, or https with a token. */
@@ -194,21 +269,52 @@ export class QwenTtsProvider implements TtsProvider {
     const req = parsed.data;
     this.voiceFingerprint(req.voiceId); // unknown voice
     const clip = this.clips.get(req.voiceId)!;
+    const parts = splitSpeechText(req.text);
+    if (parts.length === 1) return this.render(req.text, clip, opts.signal);
 
+    // A long line: render its parts one after another with the same clip and settings, check
+    // each, and join their samples. Once a part has been rendered, any later failure is billed.
+    const rendered: { bytes: Buffer; dataOffset: number; dataLength: number }[] = [];
+    let total = 44;
+    for (const part of parts) {
+      if (opts.signal?.aborted) throw new TtsError("aborted", "render aborted", rendered.length > 0, false);
+      let bytes: Buffer;
+      try {
+        bytes = await this.render(part, clip, opts.signal);
+      } catch (err) {
+        if (err instanceof TtsError && rendered.length > 0 && !err.billed) throw new TtsError(err.kind, err.message, true, err.retryable);
+        throw err;
+      }
+      let info;
+      try {
+        info = validateWav(bytes, { sampleRate: WAV_SAMPLE_RATE, channels: WAV_CHANNELS, bitsPerSample: WAV_BITS });
+      } catch (err) {
+        const why = err instanceof WavError ? err.message : "it could not be read";
+        throw new TtsError("invalid_output", `the speech service returned an unusable WAV for part ${rendered.length + 1} of ${parts.length} of a long line (${why})`, true, true);
+      }
+      total += info.dataLength;
+      if (total > this.maxBytes) throw new TtsError("invalid_output", "the audio from the speech service is too large", true, true);
+      rendered.push({ bytes, dataOffset: info.dataOffset, dataLength: info.dataLength });
+    }
+    return joinWavs(rendered);
+  }
+
+  /** One request to the service for one piece of text. */
+  private async render(text: string, clip: { audio: string; text: string }, callerSignal: AbortSignal | undefined): Promise<Buffer> {
     const timeout = AbortSignal.timeout(this.timeoutMs);
-    const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+    const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.base}/tts`, {
         method: "POST",
         headers: { "content-type": "application/json", ...authHeaders(this.token) },
         // Delivery hints are not sent: every line clones its voice's clip as it is (Task 5.1, option a).
-        body: JSON.stringify({ text: req.text, language: SPEECH_LANGUAGE, seed: this.seed, reference: { audio: clip.audio, text: clip.text } }),
+        body: JSON.stringify({ text, language: SPEECH_LANGUAGE, seed: this.seed, reference: { audio: clip.audio, text: clip.text } }),
         redirect: "error",
         signal,
       });
     } catch (err) {
-      throw describeFetchFailure(err, opts.signal, true);
+      throw describeFetchFailure(err, callerSignal, true);
     }
 
     if (!res.ok) throw await failureFromResponse(res);
@@ -225,7 +331,7 @@ export class QwenTtsProvider implements TtsProvider {
       return await readLimited(res, this.maxBytes, signal);
     } catch (err) {
       if (err instanceof TtsError) throw err;
-      throw describeFetchFailure(err, opts.signal, true);
+      throw describeFetchFailure(err, callerSignal, true);
     }
   }
 }

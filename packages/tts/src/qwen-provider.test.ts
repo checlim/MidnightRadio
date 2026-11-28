@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { ASSUMED_MS_PER_CHAR, QwenTtsProvider, assertServiceUrl, loadQwenConfig, type QwenTtsOptions } from "./qwen-provider.js";
+import fc from "fast-check";
+import { ASSUMED_MS_PER_CHAR, MAX_CHUNK_CHARS, QwenTtsProvider, assertServiceUrl, loadQwenConfig, splitSpeechText, type QwenTtsOptions } from "./qwen-provider.js";
 import { TtsError } from "./provider.js";
 import { RenderCache } from "./render-cache.js";
 import { renderSegments } from "./segments.js";
+import { StubProvider } from "./stub.js";
 import { clipBytes, clonableStubCatalogue, CLIP_TRANSCRIPT, writeClips } from "./test-support/clonable-catalogue.js";
 import { closedPort, startFakeService, type FakeService, type FakeState } from "./test-support/fake-audio-service.js";
 import { validateWav } from "./wav.js";
@@ -344,6 +346,133 @@ describe("rendering", () => {
       messages.push((await failure(provider.synthesize(say("Hello.")))).message);
     }
     expect(messages.join("\n")).not.toContain(TOKEN);
+  });
+});
+
+describe("long lines", () => {
+  // About 750 characters of prose: sentences of varied length, curly quotes, an ellipsis.
+  const SENTENCES = [
+    "The night was cold and the road was long, and the carriage climbed between the dark pines while the wind moved in the branches far above us.",
+    "\u201cWelcome to my house!\u201d said the Count, and he stood aside to let me pass.",
+    "Far below, a river ran black under the moon\u2026 and the driver said nothing at all.",
+    "Every mile the hills grew steeper and the sky grew lower, until the stars were hidden and only the lamps showed the way ahead.",
+    "At last the walls of an old castle rose out of the dark, and I knew that I had come to the end of my journey.",
+    "I cannot say how long I stood there before the great door opened.",
+  ];
+  const LONG = SENTENCES.join(" ").repeat(2);
+
+  it("keeps a line of up to 600 characters whole", () => {
+    expect(MAX_CHUNK_CHARS).toBe(600);
+    const exact = "x".repeat(600);
+    expect(splitSpeechText(exact)).toEqual([exact]);
+    expect(splitSpeechText("Hello.")).toEqual(["Hello."]);
+  });
+
+  it("cuts at sentence ends, then spaces, then at a fixed length, and the parts join back exactly", () => {
+    const parts = splitSpeechText(LONG);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.join("")).toBe(LONG);
+    for (const p of parts.slice(0, -1)) {
+      expect(p.length).toBeLessThanOrEqual(600);
+      expect(p).toMatch(/[.!?\u2026]["'\u201d\u2019]*\s+$/); // every cut follows a sentence end
+    }
+    // No sentence end in reach: the cut goes after the last space.
+    const words = "word ".repeat(200);
+    const byWords = splitSpeechText(words);
+    expect(byWords.join("")).toBe(words);
+    expect(byWords[0]).toBe("word ".repeat(120));
+    // One unbroken token: cut at 600 characters.
+    const token = "a".repeat(1_500);
+    expect(splitSpeechText(token).map((p) => p.length)).toEqual([600, 600, 300]);
+    // A cut never separates the halves of a surrogate pair.
+    const emoji = "\u{1F47B}".repeat(400); // 800 UTF-16 units
+    const ghostly = splitSpeechText(emoji);
+    expect(ghostly.join("")).toBe(emoji);
+    expect(ghostly.every((p) => !/^[\udc00-\udfff]|[\ud800-\udbff]$/.test(p))).toBe(true);
+    // A part that would be only whitespace joins its neighbour.
+    const trailing = `${"b".repeat(600)}${" ".repeat(10)}`;
+    expect(splitSpeechText(trailing)).toEqual([trailing]);
+  });
+
+  it("property: any text splits into non-blank parts that join back exactly, each at most `max` characters apart from whitespace folded in at its ends", () => {
+    const piece = fc.constantFrom("A", "b", " ", "  ", "\n", ".", "!", "?", "\u2026", "\u201d", "\u2019", ",", "\u{1F47B}", "word", "x".repeat(40));
+    fc.assert(
+      fc.property(fc.array(piece, { maxLength: 400 }), fc.integer({ min: 2, max: 700 }), (pieces, max) => {
+        const text = `${pieces.join("")}z`; // never blank, as a valid request
+        const parts = splitSpeechText(text, max);
+        expect(parts.join("")).toBe(text);
+        for (const p of parts) {
+          expect(p).toMatch(/\S/);
+          expect(p.trim().length).toBeLessThanOrEqual(max);
+        }
+      }),
+      { numRuns: 300 },
+    );
+  });
+
+  it("renders a long line part by part with the same clip and settings, and returns one valid WAV of all their audio", async () => {
+    const { provider } = await open({}, { seed: 9 });
+    const wav = await provider.synthesize({ voiceId: "stub-f1", text: LONG, delivery: "urgent" });
+    const sent = service.requests.filter((r) => r.url === "/tts").map((r) => r.body as { text: string; language: string; seed: number; reference: { audio: string; text: string } });
+    const parts = splitSpeechText(LONG);
+    expect(sent.map((b) => b.text)).toEqual(parts); // in order, each part once
+    expect(sent.map((b) => b.text).join("")).toBe(LONG);
+    for (const b of sent) expect(b).toEqual({ text: b.text, language: "English", seed: 9, reference: { audio: clipBytes("stub-f1").toString("base64"), text: CLIP_TRANSCRIPT } });
+    // The result is a valid WAV whose samples are each part's samples, in order.
+    const info = validateWav(wav);
+    const stub = new StubProvider();
+    const expected = Buffer.concat(
+      await Promise.all(
+        parts.map(async (text) => {
+          const one = await stub.synthesize({ voiceId: "stub-f1", text });
+          const i = validateWav(one);
+          return one.subarray(i.dataOffset, i.dataOffset + i.dataLength);
+        }),
+      ),
+    );
+    expect(wav.subarray(info.dataOffset, info.dataOffset + info.dataLength).equals(expected)).toBe(true);
+    expect(info.dataOffset).toBe(44);
+  });
+
+  it("renders a long unbroken token in fixed-length parts", async () => {
+    const { provider } = await open();
+    const token = "Aaaah".repeat(300); // 1,500 characters, no space
+    const wav = await provider.synthesize(say(token));
+    expect(service.requests.filter((r) => r.url === "/tts").map((r) => (r.body as { text: string }).text.length)).toEqual([600, 600, 300]);
+    expect(validateWav(wav).frames).toBeGreaterThan(0);
+  });
+
+  it("keeps the line's cache key and caches it as one line", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mr-qwen-long-"));
+    try {
+      const { provider, service } = await open();
+      const cache = new RenderCache({ dir, provider });
+      const { renderCacheKey } = await import("./cache-key.js");
+      const line = { id: "scenes[0].segments[3]", voiceId: "stub-f1", text: LONG };
+      expect(cache.keyOf(say(LONG))).toBe(renderCacheKey(provider, say(LONG)));
+      const [first] = await renderSegments([line], { cache });
+      expect(first).toMatchObject({ id: line.id, status: "rendered" });
+      const calls = service.requests.filter((r) => r.url === "/tts").length;
+      expect(calls).toBe(splitSpeechText(LONG).length);
+      const [second] = await renderSegments([line], { cache });
+      expect(second).toMatchObject({ id: line.id, status: "cached" });
+      expect(service.requests.filter((r) => r.url === "/tts").length).toBe(calls);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the whole line, as billed, when any part fails or comes back unusable", async () => {
+    const { provider, service } = await open();
+    let n = 0;
+    service.state.tts_handler = (_r, res) => (++n === 2 ? (res.writeHead(200, { "content-type": "audio/wav", "x-model-revision": "fake-1" }).end(Buffer.alloc(100, 1)), true) : false);
+    const bad = await failure(provider.synthesize(say(LONG)));
+    expect(bad).toMatchObject({ kind: "invalid_output", billed: true, retryable: true });
+    expect(bad.message).toMatch(/part 2 of \d+ of a long line/);
+    expect(n).toBe(2); // stopped at the bad part
+    n = 0;
+    service.state.tts_handler = (_r, res) => (++n === 2 ? (res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "busy" } })), true) : false);
+    expect(await failure(provider.synthesize(say(LONG)))).toMatchObject({ kind: "unavailable", billed: true, retryable: true }); // part 1 was already rendered
   });
 });
 
